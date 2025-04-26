@@ -1,0 +1,8 @@
+/.conda
+/.venv
+/aimotive-dataset-loader
+/miniconda.exe
+/test.py
+/train
+/val
+/__pycache__
