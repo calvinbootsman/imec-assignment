@@ -68,7 +68,7 @@ class DatasetLoader:
                 camera = image_path.split('/')[-2]
                 file_number = image_name.replace('.jpg', '').replace(camera, '').replace('_', '')
                 
-                image, original_size = self._image_loader(image_path, scene, camera)
+                image, original_size = self._image_loader(image_path)
                 bounding_box_data, target = self._bounding_box_loader(scene, camera, image_name, original_size)                   
                 radar_data = self._radar_loader(self.data_path, scene, file_number)
                 data_item = DataItem(image, radar_data, bounding_box_data, image_path=image_path)
@@ -83,17 +83,23 @@ class DatasetLoader:
     def __len__(self):
         return len(self.image_paths)
     
-    def _image_loader(self, image_path: str, image_width: int, image_height: int):
-        original_image = cv2.imread(image_path)
-        original_size = original_image.shape[:2]  # (height, width)
-        image = cv2.resize(original_image, (constants.IMAGE_WIDTH, constants.IMAGE_HEIGHT))
+    def _image_loader(self, image_path: str):
+        if constants.PRESCALE == False:
+            original_image = cv2.imread(image_path)
+            original_size = original_image.shape[:2]  # (height, width)
+            image = cv2.resize(original_image, (constants.IMAGE_WIDTH, constants.IMAGE_HEIGHT))
 
-        # Convert the image to Torch tensor 
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            # Convert the image to Torch tensor 
+            image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        else:
+            new_path = image_path.replace(self.data_path, 'train/scaled_images')
+            image = cv2.imread(new_path)
+            original_size = (constants.IMAGE_HEIGHT, constants.IMAGE_WIDTH) 
+
         transform = transforms.Compose([transforms.ToTensor()])
         tensor = transform(image)
 
-        return tensor, original_size
+        return tensor, original_size 
 
     def _bounding_box_loader(self, scene: str, camera: str, image_name: str, original_size: tuple):
         """
@@ -222,7 +228,7 @@ class DatasetLoader:
         if len(correct_image_paths) > self.max_images and self.max_images > 0:
             correct_image_paths = random.sample(correct_image_paths, self.max_images)
         self.image_paths = correct_image_paths
-    
+
     def get_original_image(self, index):
         """
         Returns the original image at the specified index.

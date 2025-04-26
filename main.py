@@ -89,7 +89,7 @@ if __name__ == "__main__":
 
 
     model = NeuralNetwork(grid_size=30, num_classes=6, numb_bounding_boxes=constants.MAX_NUM_BBOXES).to(device)
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
+    optimizer = optim.Adam(model.parameters(), lr=1e-3)
     criterion = nn.MSELoss()
 
     max_no_improvement = 5

@@ -3,4 +3,6 @@ class constants:
     IMAGE_WIDTH = 244
     IMAGE_HEIGHT = 244
 
-    MAX_NUM_BBOXES = 10  
+    MAX_NUM_BBOXES = 10
+
+    PRESCALE = True  
