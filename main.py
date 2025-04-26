@@ -9,11 +9,11 @@ from dataset_loader import *
 
 
 class NeuralNetwork(nn.Module):
-    def __init__(self):
-        super().__init__(grid_size=40, num_classes=1, numb_bounding_boxes=1)
-        self.grid_size = 40
-        self.num_classes = 1
-        self.numb_bounding_boxes = 1
+    def __init__(self, grid_size=40, num_classes=1, numb_bounding_boxes=1):
+        super().__init__()
+        self.grid_size = grid_size
+        self.num_classes = num_classes
+        self.numb_bounding_boxes = numb_bounding_boxes
         
         self.cnn = nn.Sequential(
             # Based on the VGG16 architecture
@@ -49,10 +49,27 @@ def draw_bounding_box(image, boxes):
     for box in boxes:
         cv2.rectangle(image, (int(box.x1), int(box.y1)), (int(box.x2), int(box.y2)), (0, 255, 0), 2)
     return image
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+dataset = DatasetLoader(device, 'highway', num_bounding_boxes=10)
+train_dataset, val_dataset, test_dataset = torch.utils.data.random_split(dataset, [0.8, 0.1, 0.1])
+train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=32, shuffle=True)
+val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=32, shuffle=False)
+test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=32, shuffle=False)
 
-dataset = DatasetLoader('highway')
-items = dataset_loader.get_random_pictures(1)
-data_entry = items[0]
-image = draw_bounding_box(data_entry.image, data_entry.bounding_box)
-cv2.imshow('image', image)
-cv2.waitKey(0)
+
+model = NeuralNetwork().to(device)
+optimizer = optim.Adam(model.parameters(), lr=0.0001)
+criterion = nn.MSELoss()
+
+num_epochs = 10
+for epoch in range(num_epochs):
+    # model.train()
+    for data_item, targets in dataset:
+        image = data_item
+        optimizer.zero_grad()
+        outputs = model(image)
+        loss = criterion(outputs, targets)
+        loss.backward()
+        optimizer.step()
+
+    print(f'Epoch [{epoch+1}/{num_epochs}], Loss: {loss.item():.4f}')

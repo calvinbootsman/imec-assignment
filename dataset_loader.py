@@ -6,13 +6,17 @@ import os
 import random
 import json
 import cv2
+from constants import *
 
 class DataItem:
     def __init__(self, image, radar_data, bounding_box, image_path=None):
         self.image = image
         self.radar_data = radar_data
         self.bounding_box = bounding_box
-        self.image_path = image_path        
+        self.image_path = image_path
+
+    def to_input(self):
+        return self.image   
 
 class BoundingBoxDataItem:
     def __init__(self, x1, y1, x2, y2, label):
@@ -35,24 +39,26 @@ class RadarDataItem:
         self.rcs = rcs
 
 class DatasetLoader:
-    def __init__(self, driving_style='highway', downsample=1, max_images=-1):
+    def __init__(self, device, driving_style='highway', downsample=1, max_images=-1, num_bounding_boxes=1):
+        self.device = device
         self.data_path = f'train/{driving_style}'
         self.image_paths = []
         self.data_set = []
         self.downsample = downsample
         self.max_images = max_images
+        self.num_bounding_boxes = num_bounding_boxes
 
         self._index_images()
 
         self.label_map = {
             'SIZE_VEHICLE_M': 0,
             'SIZE_VEHICLE_XL': 1,
-            'TRAFFIC_SIGN': 2,
-            'TRAFFIC_LIGHT': 3,
-            'PEDESTRIAN': 4,
-            'TWO_WHEEL_WITHOUT_RIDER': 5,
-            'RIDER': 6
+            'PEDESTRIAN': 2,
+            'TWO_WHEEL_WITHOUT_RIDER': 3,
+            'RIDER': 4,
+            'NONE': 5,
         } 
+        
     def __getitem__(self, index):
         if index >= len(self.image_paths):
             raise IndexError("Index out of range")
@@ -69,7 +75,7 @@ class DatasetLoader:
                 radar_data = self._radar_loader(self.data_path, scene, file_number)
                 data_item = DataItem(image, radar_data, bounding_box_data, image_path=image_path)
 
-                return data_item, target
+                return data_item.to_input(), target
                 
             except Exception as e:
                 print(f"Error: {e}")
@@ -107,15 +113,15 @@ class DatasetLoader:
     #     self.data_set = items
     #     return items
     
-    def _image_loader(self, image_path: str, scene: str, camera: str):
+    def _image_loader(self, image_path: str, image_width: int, image_height: int):
         original_image = cv2.imread(image_path)
-        original_size = original_image.shape
-        image = cv2.resize(original_image, (original_size[1] // self.downsample, original_size[0] // self.downsample))
+        image = cv2.resize(original_image, (constants.IMAGE_WIDTH // self.downsample, constants.IMAGE_HEIGHT // self.downsample))
+        # image = cv2.resize(original_image, (original_size[1] // self.downsample, original_size[0] // self.downsample))
 
         # Convert the image to Torch tensor 
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        transform = transforms.Compose([transforms.ToTensor()])        
-        tensor = transform(image)
+        transform = transforms.Compose([transforms.ToTensor()])
+        tensor = transform(image).to(self.device)
 
         return tensor
 
@@ -129,6 +135,9 @@ class DatasetLoader:
         bounding_boxes = []
         if not os.path.exists(box_data):
             # raise FileNotFoundError(f"Bounding box data file not found: {box_data}")
+            for _ in range(self.num_bounding_boxes):
+                target_tensor = torch.tensor([-1, -1, -1, -1, -1, 0.0], dtype=torch.float32, device=self.device)
+                target_list.append(target_tensor)
             return bounding_boxes, target_list
         
         with open(box_data, 'r') as box_file_handle:
@@ -137,19 +146,22 @@ class DatasetLoader:
             bounding_boxes_coords = []
             bounding_boxes_labels = []
             for box in boxes:
-                 if isinstance(box, dict) and all(k in box and box[k] is not None for k in ['BoundingBox2D X1', 'BoundingBox2D Y1', 'BoundingBox2D X2', 'BoundingBox2D Y2', 'ObjectType']):
-                     bounding_boxes_coords.append([
-                         max(0.0, box['BoundingBox2D X1'] / self.downsample),
-                         max(0.0, box['BoundingBox2D Y1'] / self.downsample),
-                         max(0.0, box['BoundingBox2D X2'] / self.downsample),
-                         max(0.0, box['BoundingBox2D Y2'] / self.downsample)
-                     ])
-                     bounding_boxes_labels.append(box['ObjectType'])
+                # Check if the box is a dictionary and contains the required keys
+                if box.get('ObjectType') in self.label_map \
+                    and isinstance(box, dict) \
+                    and all(k in box and box[k] is not None for k in ['BoundingBox2D X1', 'BoundingBox2D Y1', 'BoundingBox2D X2', 'BoundingBox2D Y2', 'ObjectType']):
+                    bounding_boxes_coords.append([
+                        max(0.0, box['BoundingBox2D X1'] / self.downsample),
+                        max(0.0, box['BoundingBox2D Y1'] / self.downsample),
+                        max(0.0, box['BoundingBox2D X2'] / self.downsample),
+                        max(0.0, box['BoundingBox2D Y2'] / self.downsample)
+                    ])
+                    bounding_boxes_labels.append(box['ObjectType'])
             bounding_boxes = []
             if bounding_boxes_coords:
-                bounding_boxes_tensor = torch.tensor(bounding_boxes_coords, dtype=torch.float32)
+                bounding_boxes_tensor = torch.tensor(bounding_boxes_coords, dtype=torch.float32, device=self.device)
             else:
-                bounding_boxes_tensor = torch.empty((0, 4), dtype=torch.float32)
+                bounding_boxes_tensor = torch.empty((0, 4), dtype=torch.float32, device=self.device)
 
             for i in range(len(bounding_boxes_tensor)):
                 x1, y1, x2, y2 = bounding_boxes_tensor[i]
@@ -161,7 +173,13 @@ class DatasetLoader:
                 label = self.label_map.get(bounding_boxes_labels[i], -1)
                 target_list.append([label, x_center, y_center, width, height, 1.0]) # 1.0 is the confidence score
 
-            return bounding_boxes, target_list
+            if len(target_list) > self.num_bounding_boxes:
+                print(f"Warning: More bounding boxes than expected. Found {len(target_list)} but expected {self.num_bounding_boxes}.")
+
+            for i in range(self.num_bounding_boxes -  len(target_list)):
+                target_list.append(torch.tensor([-1, -1, -1, -1, -1, 0.0], dtype=torch.float32, device=self.device))
+
+            return bounding_boxes, target_list  
         
     def _radar_loader(self, data_path: str, folder: str, file_number: str):
         """
@@ -190,9 +208,9 @@ class DatasetLoader:
                          ])
 
         if radar_data:
-            radar_tensor = torch.tensor(radar_data, dtype=torch.float32)
+            radar_tensor = torch.tensor(radar_data, dtype=torch.float32, device=self.device)
         else:
-            radar_tensor = torch.empty((0, 3), dtype=torch.float32)
+            radar_tensor = torch.empty((0, 3), dtype=torch.float32, device=self.device)
         return radar_tensor
     
     def _index_images(self):
@@ -232,7 +250,7 @@ class DatasetLoader:
         if len(correct_image_paths) > self.max_images and self.max_images > 0:
             correct_image_paths = random.sample(correct_image_paths, self.max_images)
         self.image_paths = correct_image_paths
-
+    
 if __name__ == "__main__":
     dataset_loader = DatasetLoader('highway')
 
@@ -240,17 +258,22 @@ if __name__ == "__main__":
     dataset_loader, [0.8, 0.1, 0.1])
     
     # items = dataset_loader.get_random_pictures(1)
-    data_entry = train_dataset[0]
-    image_path = data_entry[0].image_path
+    image_index = train_dataset.indices[0]
+    image_path = dataset_loader.image_paths[image_index]
     image = cv2.imread(image_path)
 
-    radar_data = data_entry[0].radar_data
-    bounding_boxes = data_entry[0].bounding_box
+    # radar_data = data_entry[0].radar_data
+
+    _, bounding_boxes = train_dataset[0]
     
     # Display the image with bounding boxes
     if bounding_boxes is not None:
         for box in bounding_boxes:
-            cv2.rectangle(image, (int(box.x1), int(box.y1)), (int(box.x2), int(box.y2)), (0, 255, 0), 2)
+            x_center, y_center = int(box[1]), int(box[2])
+            width, height = int(box[3]), int(box[4])
+            x1, y1 = x_center - width // 2, y_center - height // 2
+            x2, y2 = x_center + width // 2, y_center + height // 2
+            cv2.rectangle(image, (x1, y1), (x2, y2), (0, 255, 0), 2)
     else:
         print("No bounding boxes found.")
     cv2.imshow('image', image)
