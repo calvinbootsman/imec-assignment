@@ -39,8 +39,7 @@ class RadarDataItem:
         self.rcs = rcs
 
 class DatasetLoader:
-    def __init__(self, device, driving_style='highway', max_images=-1, num_bounding_boxes=1):
-        self.device = device
+    def __init__(self, driving_style='highway', max_images=-1, num_bounding_boxes=1):
         self.data_path = f'train/{driving_style}'
         self.image_paths = []
         self.data_set = []
@@ -92,7 +91,7 @@ class DatasetLoader:
         # Convert the image to Torch tensor 
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         transform = transforms.Compose([transforms.ToTensor()])
-        tensor = transform(image).to(self.device)
+        tensor = transform(image)
 
         return tensor, original_size
 
@@ -119,7 +118,7 @@ class DatasetLoader:
                     # Check if the box is a dictionary and contains the required keys
                     if i >= self.num_bounding_boxes:
                         break
-                    
+
                     if box.get('ObjectType') in self.label_map \
                         and isinstance(box, dict) \
                         and all(k in box and box[k] is not None for k in ['BoundingBox2D X1', 'BoundingBox2D Y1', 'BoundingBox2D X2', 'BoundingBox2D Y2', 'ObjectType']):
@@ -132,9 +131,9 @@ class DatasetLoader:
                         bounding_boxes_labels.append(box['ObjectType'])
                 bounding_boxes = []
                 if bounding_boxes_coords:
-                    bounding_boxes_tensor = torch.tensor(bounding_boxes_coords, dtype=torch.float32, device=self.device)
+                    bounding_boxes_tensor = torch.tensor(bounding_boxes_coords, dtype=torch.float32)
                 else:
-                    bounding_boxes_tensor = torch.empty((0, 4), dtype=torch.float32, device=self.device)
+                    bounding_boxes_tensor = torch.empty((0, 4), dtype=torch.float32)
 
                 for i in range(len(bounding_boxes_tensor)):
                     x1, y1, x2, y2 = bounding_boxes_tensor[i]
@@ -151,7 +150,7 @@ class DatasetLoader:
                 for i in range(self.num_bounding_boxes -  len(target_list)):
                     target_list.append([0, 0, 0, 0, 0, 0.0])
 
-        target_list = torch.tensor(target_list, dtype=torch.float32, device=self.device)
+        target_list = torch.tensor(target_list, dtype=torch.float32)
         return bounding_boxes, target_list  
         
     def _radar_loader(self, data_path: str, folder: str, file_number: str):
@@ -181,9 +180,9 @@ class DatasetLoader:
                          ])
 
         if radar_data:
-            radar_tensor = torch.tensor(radar_data, dtype=torch.float32, device=self.device)
+            radar_tensor = torch.tensor(radar_data, dtype=torch.float32)
         else:
-            radar_tensor = torch.empty((0, 3), dtype=torch.float32, device=self.device)
+            radar_tensor = torch.empty((0, 3), dtype=torch.float32)
         return radar_tensor
     
     def _index_images(self):
@@ -223,7 +222,17 @@ class DatasetLoader:
         if len(correct_image_paths) > self.max_images and self.max_images > 0:
             correct_image_paths = random.sample(correct_image_paths, self.max_images)
         self.image_paths = correct_image_paths
-
+    
+    def get_original_image(self, index):
+        """
+        Returns the original image at the specified index.
+        """
+        if index >= len(self.image_paths):
+            raise IndexError("Index out of range")
+        image_path = self.image_paths[index]
+        original_image = cv2.imread(image_path)
+        return original_image
+    
 if __name__ == "__main__":
     dataset_loader = DatasetLoader('highway')
 

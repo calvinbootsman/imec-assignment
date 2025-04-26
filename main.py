@@ -35,14 +35,8 @@ class NeuralNetwork(nn.Module):
             nn.MaxPool2d(kernel_size=2, stride=2),
             nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=1),
             nn.ReLU(),
-        #     nn.AdaptiveMaxPool2d((self.grid_size,self.grid_size)),
-        #     # self.numb_bounding_boxes * 5 because of the 4 coordinates of the bounding box and 1 for the confidence score
-        #     nn.Conv2d(256, self.num_classes + (self.numb_bounding_boxes * 5), kernel_size=1, stride=1, padding=1),
         )
 
-         # Calculate the size after the CNN layers
-        # We need a dummy tensor pass to determine the flattened size dynamically
-        # Or calculate it manually based on input_dims and CNN architecture
         with torch.no_grad():
             dummy_input = torch.zeros(1, *self.input_dims) 
             cnn_out_shape = self.cnn(dummy_input).shape
@@ -50,12 +44,10 @@ class NeuralNetwork(nn.Module):
 
         # Fully connected layers
         self.fc = nn.Sequential(
-            nn.Flatten(), # Flatten the output of CNN: (B, 256, H/16, W/16) -> (B, 256*H/16*W/16)
-            nn.Linear(self.flattened_size, 1024), # Example intermediate layer
+            nn.Flatten(), 
+            nn.Linear(self.flattened_size, 1024),
             nn.ReLU(),
-            nn.Dropout(0.5), # Optional dropout for regularization
-            # Output layer: Predict parameters for N boxes
-            # Total outputs = num_boxes * features_per_box
+            nn.Dropout(0.1), 
             nn.Linear(1024, self.numb_bounding_boxes * self.output_features_per_box)
         )
 
@@ -68,32 +60,83 @@ class NeuralNetwork(nn.Module):
 
 labels = ['SIZE_VEHICLE_M', 'SIZE_VEHICLE_XL', 'TRAFFIC_SIGN', 'TRAFFIC_LIGHT', 'PEDESTRIAN', 'TWO_WHEEL_WITHOUT_RIDER', 'RIDER']
 
-def draw_bounding_box(image, boxes):
-    for box in boxes:
-        cv2.rectangle(image, (int(box.x1), int(box.y1)), (int(box.x2), int(box.y2)), (0, 255, 0), 2)
+def draw_bounding_box(image, tensors):
+    height, width, _ = image.shape
+
+    for box in tensors:
+        x_center = box[1] * width
+        y_center = box[2] * height
+        width_box = box[3] * width
+        height_box = box[4] * height
+        x1 = int(x_center - width_box / 2)
+        y1 = int(y_center - height_box / 2)
+        x2 = int(x_center + width_box / 2)
+        y2 = int(y_center + height_box / 2)
+
+        cv2.rectangle(image, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 0), 2)
     return image
-torch.manual_seed(1)
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-dataset = DatasetLoader(device, 'highway', num_bounding_boxes=constants.MAX_NUM_BBOXES)
-train_dataset, val_dataset, test_dataset = torch.utils.data.random_split(dataset, [0.8, 0.1, 0.1])
-train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=32, shuffle=True)
-val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=32, shuffle=False)
-test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=32, shuffle=False)
+if __name__ == "__main__":
+    torch.manual_seed(1)
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    dataset = DatasetLoader('highway', num_bounding_boxes=constants.MAX_NUM_BBOXES)
+    train_dataset, val_dataset, test_dataset = torch.utils.data.random_split(dataset, [0.8, 0.1, 0.1])
+
+    num_workers = 4
+    train_loader = torch.utils.data.DataLoader(train_dataset, num_workers=num_workers, batch_size=32, shuffle=True)
+    val_loader = torch.utils.data.DataLoader(val_dataset, num_workers=num_workers, batch_size=32, shuffle=False)
+    test_loader = torch.utils.data.DataLoader(test_dataset, num_workers=num_workers, batch_size=32, shuffle=False)
 
 
-model = NeuralNetwork(grid_size=30, num_classes=6, numb_bounding_boxes=constants.MAX_NUM_BBOXES).to(device)
-optimizer = optim.Adam(model.parameters(), lr=0.0001)
-criterion = nn.MSELoss()
+    model = NeuralNetwork(grid_size=30, num_classes=6, numb_bounding_boxes=constants.MAX_NUM_BBOXES).to(device)
+    optimizer = optim.Adam(model.parameters(), lr=0.001)
+    criterion = nn.MSELoss()
 
-num_epochs = 10
-for epoch in range(num_epochs):
-    model.train()
-    for batch_data_item, batch_targets in train_loader:
-        image = batch_data_item
-        optimizer.zero_grad()
-        outputs = model(image)
-        loss = criterion(outputs, batch_targets)
-        loss.backward()
-        optimizer.step()
-        print(f'Batch Loss: {loss.item():.4f}')
-    print(f'Epoch [{epoch+1}/{num_epochs}], Loss: {loss.item():.4f}')
+    max_no_improvement = 5
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=0.5, patience=max_no_improvement)
+
+    num_epochs = 1
+    for epoch in range(num_epochs):
+        model.train()
+        running_loss = 0.0
+
+        for i, (batch_data_item, batch_targets) in enumerate(train_loader):
+            image = batch_data_item.to(device)
+            batch_targets = batch_targets.to(device)
+            optimizer.zero_grad()
+            outputs = model(image)
+            loss = criterion(outputs, batch_targets)
+            loss.backward()
+            optimizer.step()
+            running_loss += loss.item()
+            if i % 100 == 99: # Print stats every 100 batches
+                print(f'Epoch [{epoch+1}/{num_epochs}], Batch [{i+1}/{len(train_loader)}], Batch Loss: {(running_loss/100):.4f}')
+                running_loss = 0.0
+            if i % 25 == 0:
+                scheduler.step(loss)
+        print(f'Epoch [{epoch+1}/{num_epochs}], Loss: {loss.item():.4f}')
+        # Validation
+        model.eval()
+        random_index = random.randint(0, len(val_dataset) - 1)
+        random_sample = val_dataset[random_index]
+        _, target = random_sample
+        image = dataset.get_original_image(random_index)
+        output_image = draw_bounding_box(image, target)
+        cv2.imshow('Output', output_image)
+        cv2.waitKey(0)
+
+
+
+
+        # val_loss = 0.0
+        # with torch.no_grad():
+        #     for i, (batch_data_item, batch_targets) in enumerate(val_loader):
+        #         image = batch_data_item.to(device)
+        #         batch_targets = batch_targets.to(device)
+        #         outputs = model(image)
+        #         loss = criterion(outputs, batch_targets)
+        #         val_loss += loss.item()
+        # val_loss /= len(val_loader)
+        
+
+    
