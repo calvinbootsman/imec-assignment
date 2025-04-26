@@ -39,12 +39,11 @@ class RadarDataItem:
         self.rcs = rcs
 
 class DatasetLoader:
-    def __init__(self, device, driving_style='highway', downsample=1, max_images=-1, num_bounding_boxes=1):
+    def __init__(self, device, driving_style='highway', max_images=-1, num_bounding_boxes=1):
         self.device = device
         self.data_path = f'train/{driving_style}'
         self.image_paths = []
         self.data_set = []
-        self.downsample = downsample
         self.max_images = max_images
         self.num_bounding_boxes = num_bounding_boxes
 
@@ -70,8 +69,8 @@ class DatasetLoader:
                 camera = image_path.split('/')[-2]
                 file_number = image_name.replace('.jpg', '').replace(camera, '').replace('_', '')
                 
-                image = self._image_loader(image_path, scene, camera)
-                bounding_box_data, target = self._bounding_box_loader(scene, camera, image_name)                   
+                image, original_size = self._image_loader(image_path, scene, camera)
+                bounding_box_data, target = self._bounding_box_loader(scene, camera, image_name, original_size)                   
                 radar_data = self._radar_loader(self.data_path, scene, file_number)
                 data_item = DataItem(image, radar_data, bounding_box_data, image_path=image_path)
 
@@ -85,47 +84,19 @@ class DatasetLoader:
     def __len__(self):
         return len(self.image_paths)
     
-    # def get_random_pictures(self, total_pictures: int):
-    #     items = []
-    #     for _ in range(total_pictures):
-    #         while True:
-    #             try:
-    #                 image_path = self.image_paths.pop(random.randrange(len(self.image_paths)))
-
-    #                 image_name = os.path.basename(image_path)
-    #                 scene = image_path.split('/')[-5]
-    #                 camera = image_path.split('/')[-2]
-    #                 file_number = image_name.replace('.jpg', '').replace(camera, '').replace('_', '')
-                    
-    #                 original_image = cv2.imread(image_path)
-    #                 original_size = original_image.shape
-    #                 image = cv2.resize(original_image, (original_size[1] // downsample, original_size[0] // downsample))
-    #                 camera_data = self._bounding_box_loader(scene, camera, image_name)                   
-    #                 radar_data = self._radar_loader(self.data_path, scene, file_number)
-    #                 data_item = DataItem(image, radar_data, camera_data)
-    #                 items.append(data_item)
-                    
-    #             except Exception as e:
-    #                 print(f"Error: {e}")
-    #                 continue
-    #             break
-
-    #     self.data_set = items
-    #     return items
-    
     def _image_loader(self, image_path: str, image_width: int, image_height: int):
         original_image = cv2.imread(image_path)
-        image = cv2.resize(original_image, (constants.IMAGE_WIDTH // self.downsample, constants.IMAGE_HEIGHT // self.downsample))
-        # image = cv2.resize(original_image, (original_size[1] // self.downsample, original_size[0] // self.downsample))
+        original_size = original_image.shape[:2]  # (height, width)
+        image = cv2.resize(original_image, (constants.IMAGE_WIDTH, constants.IMAGE_HEIGHT))
 
         # Convert the image to Torch tensor 
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         transform = transforms.Compose([transforms.ToTensor()])
         tensor = transform(image).to(self.device)
 
-        return tensor
+        return tensor, original_size
 
-    def _bounding_box_loader(self, scene: str, camera: str, image_name: str):
+    def _bounding_box_loader(self, scene: str, camera: str, image_name: str, original_size: tuple):
         """
         Loads bounding box data from the specified path.
         """
@@ -134,52 +105,54 @@ class DatasetLoader:
         target_list = []
         bounding_boxes = []
         if not os.path.exists(box_data):
-            # raise FileNotFoundError(f"Bounding box data file not found: {box_data}")
             for _ in range(self.num_bounding_boxes):
-                target_tensor = torch.tensor([-1, -1, -1, -1, -1, 0.0], dtype=torch.float32, device=self.device)
-                target_list.append(target_tensor)
-            return bounding_boxes, target_list
+                target =[0, 0, 0, 0, 0, 0.0]
+                target_list.append(target)
         
-        with open(box_data, 'r') as box_file_handle:
-            data = json.load(box_file_handle)
-            boxes = data.get('CapturedObjects', [])
-            bounding_boxes_coords = []
-            bounding_boxes_labels = []
-            for box in boxes:
-                # Check if the box is a dictionary and contains the required keys
-                if box.get('ObjectType') in self.label_map \
-                    and isinstance(box, dict) \
-                    and all(k in box and box[k] is not None for k in ['BoundingBox2D X1', 'BoundingBox2D Y1', 'BoundingBox2D X2', 'BoundingBox2D Y2', 'ObjectType']):
-                    bounding_boxes_coords.append([
-                        max(0.0, box['BoundingBox2D X1'] / self.downsample),
-                        max(0.0, box['BoundingBox2D Y1'] / self.downsample),
-                        max(0.0, box['BoundingBox2D X2'] / self.downsample),
-                        max(0.0, box['BoundingBox2D Y2'] / self.downsample)
-                    ])
-                    bounding_boxes_labels.append(box['ObjectType'])
-            bounding_boxes = []
-            if bounding_boxes_coords:
-                bounding_boxes_tensor = torch.tensor(bounding_boxes_coords, dtype=torch.float32, device=self.device)
-            else:
-                bounding_boxes_tensor = torch.empty((0, 4), dtype=torch.float32, device=self.device)
+        else:
+            with open(box_data, 'r') as box_file_handle:
+                data = json.load(box_file_handle)
+                boxes = data.get('CapturedObjects', [])
+                bounding_boxes_coords = []
+                bounding_boxes_labels = []
+                for i, box in enumerate(boxes):
+                    # Check if the box is a dictionary and contains the required keys
+                    if i >= self.num_bounding_boxes:
+                        break
+                    
+                    if box.get('ObjectType') in self.label_map \
+                        and isinstance(box, dict) \
+                        and all(k in box and box[k] is not None for k in ['BoundingBox2D X1', 'BoundingBox2D Y1', 'BoundingBox2D X2', 'BoundingBox2D Y2', 'ObjectType']):
+                        bounding_boxes_coords.append([
+                            box['BoundingBox2D X1'] / original_size[1],
+                            box['BoundingBox2D Y1'] / original_size[0],
+                            box['BoundingBox2D X2'] / original_size[1],
+                            box['BoundingBox2D Y2'] / original_size[0]
+                        ])
+                        bounding_boxes_labels.append(box['ObjectType'])
+                bounding_boxes = []
+                if bounding_boxes_coords:
+                    bounding_boxes_tensor = torch.tensor(bounding_boxes_coords, dtype=torch.float32, device=self.device)
+                else:
+                    bounding_boxes_tensor = torch.empty((0, 4), dtype=torch.float32, device=self.device)
 
-            for i in range(len(bounding_boxes_tensor)):
-                x1, y1, x2, y2 = bounding_boxes_tensor[i]
-                bounding_boxes.append(BoundingBoxDataItem(x1.item(), y1.item(), x2.item(), y2.item(), bounding_boxes_labels[i]))
+                for i in range(len(bounding_boxes_tensor)):
+                    x1, y1, x2, y2 = bounding_boxes_tensor[i]
+                    bounding_boxes.append(BoundingBoxDataItem(x1.item(), y1.item(), x2.item(), y2.item(), bounding_boxes_labels[i]))
+                
+                for i in range(len(bounding_boxes)):
+                    x_center, y_center, width, height = bounding_boxes[i].x_center, bounding_boxes[i].y_center, bounding_boxes[i].width, bounding_boxes[i].height
+                    label = self.label_map.get(bounding_boxes_labels[i], -1)
+                    target_list.append([label, x_center, y_center, width, height, 1.0]) # 1.0 is the confidence score
 
-            
-            for i in range(len(bounding_boxes)):
-                x_center, y_center, width, height = bounding_boxes[i].x_center, bounding_boxes[i].y_center, bounding_boxes[i].width, bounding_boxes[i].height
-                label = self.label_map.get(bounding_boxes_labels[i], -1)
-                target_list.append([label, x_center, y_center, width, height, 1.0]) # 1.0 is the confidence score
+                if len(target_list) > self.num_bounding_boxes:
+                    print(f"Warning: More bounding boxes than expected. Found {len(target_list)} but expected {self.num_bounding_boxes}.")
 
-            if len(target_list) > self.num_bounding_boxes:
-                print(f"Warning: More bounding boxes than expected. Found {len(target_list)} but expected {self.num_bounding_boxes}.")
+                for i in range(self.num_bounding_boxes -  len(target_list)):
+                    target_list.append([0, 0, 0, 0, 0, 0.0])
 
-            for i in range(self.num_bounding_boxes -  len(target_list)):
-                target_list.append(torch.tensor([-1, -1, -1, -1, -1, 0.0], dtype=torch.float32, device=self.device))
-
-            return bounding_boxes, target_list  
+        target_list = torch.tensor(target_list, dtype=torch.float32, device=self.device)
+        return bounding_boxes, target_list  
         
     def _radar_loader(self, data_path: str, folder: str, file_number: str):
         """
@@ -250,7 +223,7 @@ class DatasetLoader:
         if len(correct_image_paths) > self.max_images and self.max_images > 0:
             correct_image_paths = random.sample(correct_image_paths, self.max_images)
         self.image_paths = correct_image_paths
-    
+
 if __name__ == "__main__":
     dataset_loader = DatasetLoader('highway')
 
