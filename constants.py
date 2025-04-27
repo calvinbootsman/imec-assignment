@@ -1,8 +1,17 @@
 class constants:
     # Constants for the image processing
-    IMAGE_WIDTH = 244
-    IMAGE_HEIGHT = 244
+    IMAGE_WIDTH = 256
+    IMAGE_HEIGHT = 256
 
-    MAX_NUM_BBOXES = 10
+    MAX_NUM_BBOXES = 2
 
-    PRESCALE = True  
+    PRESCALE = False  
+
+    LABEL_MAP =  {
+            'SIZE_VEHICLE_M': 0,
+            'SIZE_VEHICLE_XL': 0,
+            'PEDESTRIAN': 1,
+        } 
+    NUM_OF_CLASSES = 2
+
+    GRID_SIZE  = int(IMAGE_HEIGHT / 16)

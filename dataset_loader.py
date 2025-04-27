@@ -7,6 +7,7 @@ import random
 import json
 import cv2
 from constants import *
+import numpy as np
 
 class DataItem:
     def __init__(self, image, radar_data, bounding_box, image_path=None):
@@ -44,8 +45,10 @@ class DatasetLoader:
         self.image_paths = []
         self.data_set = []
         self.max_images = max_images
-        self.num_boxes_per_cell = num_boxes_per_cell
+
+        self.B = num_boxes_per_cell
         self.S = grid_size
+        self.C = constants.NUM_OF_CLASSES
 
         self._index_images()
 
@@ -62,12 +65,12 @@ class DatasetLoader:
         while True:
             try:
                 image_name = os.path.basename(image_path)
-                scene = image_path.split(os.sep)[-5]
-                camera = image_path.split(os.sep)[-2]
+                scene = image_path.split('/')[-5]
+                camera = image_path.split('/')[-2]
                 file_number = image_name.replace('.jpg', '').replace(camera, '').replace('_', '')
                 
                 image_tensor, original_size = self._image_loader(image_path)
-                bounding_box_data, target = self._bounding_box_loader(scene, camera, image_name, original_size)                   
+                target = self._bounding_box_loader(scene, camera, image_name, original_size)                   
                 radar_data = self._radar_loader(self.data_path, scene, file_number)
                 # data_item = DataItem(image_tensor, radar_data, bounding_box_data, image_path=image_path)
 
@@ -107,68 +110,72 @@ class DatasetLoader:
         Loads bounding box data from the specified path.
         """
         box_file = image_name.replace('.jpg', '.json')
-        box_data = f'{self.data_path}/{scene}/dynamic/box/2d/{camera}/{box_file}'
+        box_data_path = f'{self.data_path}/{scene}/dynamic/box/2d/{camera}/{box_file}'
 
+        target_tensor = torch.zeros(self.S, self.S, self.B * 5 + self.C, dtype=torch.float32)
+
+        if not os.path.exists(box_data_path):
+            return target_tensor
         
-        target_list = []
-        bounding_boxes = []
         original_height, original_width = original_size
-        if not os.path.exists(box_data):
-            for _ in range(self.num_bounding_boxes):
-                label_array = [0.0] * (self.label_map['NONE'] + 1)
-                label_array[-1] = 1.0
-                target =label_array + [0, 0, 0, 0, 0.0] # label outputs + bounding box coordinates + confidence score
-                target_list.append(target)
-        
-        else:
-            with open(box_data, 'r') as box_file_handle:
+
+        with open(box_data_path, 'r') as box_file_handle:
+            try:
                 data = json.load(box_file_handle)
-                boxes = data.get('CapturedObjects', [])
-                bounding_boxes_coords = []
-                bounding_boxes_labels = []
-                for i, box in enumerate(boxes):
-                    # Check if the box is a dictionary and contains the required keys
-                    if i >= self.num_bounding_boxes:
-                        break
+            except json.JSONDecodeError:
+                print(f"Warning: Invalid JSON in {box_data_path}. Skipping boxes.")
+                return target_tensor
+            
+            boxes_data = data.get('CapturedObjects', [])
+            for box_json in boxes_data:
+                object_type = box_json.get('ObjectType')
+                if object_type not in self.label_map:
+                    continue
 
-                    if box.get('ObjectType') in self.label_map \
-                        and isinstance(box, dict) \
-                        and all(k in box and box[k] is not None for k in ['BoundingBox2D X1', 'BoundingBox2D Y1', 'BoundingBox2D X2', 'BoundingBox2D Y2', 'ObjectType']):
-                        bounding_boxes_coords.append([
-                            box['BoundingBox2D X1'] / original_width,
-                            box['BoundingBox2D Y1'] / original_height,
-                            box['BoundingBox2D X2'] / original_width,
-                            box['BoundingBox2D Y2'] / original_height
-                        ])
-                        bounding_boxes_labels.append(box['ObjectType'])
-                bounding_boxes = []
-                if bounding_boxes_coords:
-                    bounding_boxes_tensor = torch.tensor(bounding_boxes_coords, dtype=torch.float32)
-                else:
-                    bounding_boxes_tensor = torch.empty((0, 4), dtype=torch.float32)
+                coord_keys = ['BoundingBox2D X1', 'BoundingBox2D Y1', 'BoundingBox2D X2', 'BoundingBox2D Y2']
+                if not all(k in box_json and box_json[k] is not None for k in coord_keys):
+                    # print(f"Warning: Missing coordinate data in {box_data_path} for object {object_type}. Skipping.")
+                    continue
 
-                for i in range(len(bounding_boxes_tensor)):
-                    x1, y1, x2, y2 = bounding_boxes_tensor[i]
-                    bounding_boxes.append(BoundingBoxDataItem(x1.item(), y1.item(), x2.item(), y2.item(), bounding_boxes_labels[i]))
+                x1 = float(box_json['BoundingBox2D X1']) / original_width
+                y1 = float(box_json['BoundingBox2D Y1']) / original_height
+                x2 = float(box_json['BoundingBox2D X2']) / original_width
+                y2 = float(box_json['BoundingBox2D Y2']) / original_height
+
+                x1, y1, x2, y2 = np.clip([x1, y1, x2, y2], 0.0, 1.0)
+
+                x_center_norm = (x1 + x2) / 2
+                y_center_norm = (y1 + y2) / 2
+                width_norm = abs(x2 - x1)
+                height_norm = abs(y2 - y1)
+
+                if width_norm <= 0 or height_norm <= 0:
+                    continue
                 
-                for i in range(len(bounding_boxes)):
-                    x_center, y_center, width, height = bounding_boxes[i].x_center, bounding_boxes[i].y_center, bounding_boxes[i].width, bounding_boxes[i].height
-                    label = self.label_map.get(bounding_boxes_labels[i], -1)
-                    label_array = [0.0] * (self.label_map['NONE'] + 1)
-                    label_array[label] = 1.0
-                    target_list.append(label_array + [x_center, y_center, width, height, 1.0]) # 1.0 is the confidence score
+                x_cell_float = x_center_norm * self.S
+                y_cell_float = y_center_norm * self.S
+                grid_j = int(x_cell_float) # Column index
+                grid_i = int(y_cell_float) # Row index
+                
+                x_rel_cell = x_cell_float - grid_j
+                y_rel_cell = y_cell_float - grid_i
 
-                if len(target_list) > self.num_bounding_boxes:
-                    print(f"Warning: More bounding boxes than expected. Found {len(target_list)} but expected {self.num_bounding_boxes}.")
+                class_id = self.label_map[object_type] 
 
-                for i in range(self.num_bounding_boxes -  len(target_list)):
-                    label_array = [0.0] * (self.label_map['NONE'] + 1)
-                    label_array[-1] = 1.0
-                    target =label_array + [0, 0, 0, 0, 0.0]
-                    target_list.append(target)
+                if target_tensor[grid_i, grid_j, 4] == 0:
+                    # Assign Confidence = 1 to the first box slot
+                    target_tensor[grid_i, grid_j, 4] = 1.0
 
-        target_list = torch.tensor(target_list, dtype=torch.float32)
-        return bounding_boxes, target_list  
+                    # Assign Coordinates (rel x,y; image w,h) to the first box slot
+                    target_tensor[grid_i, grid_j, 0] = x_rel_cell
+                    target_tensor[grid_i, grid_j, 1] = y_rel_cell
+                    target_tensor[grid_i, grid_j, 2] = width_norm
+                    target_tensor[grid_i, grid_j, 3] = height_norm
+
+                    # Assign Class probabilities (one-hot)
+                    class_vector_start_index = self.B * 5
+                    target_tensor[grid_i, grid_j, class_vector_start_index + class_id] = 1.0
+        return target_tensor        
         
     def _radar_loader(self, data_path: str, folder: str, file_number: str):
         """
