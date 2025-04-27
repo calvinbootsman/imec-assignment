@@ -7,7 +7,7 @@ import json
 import cv2
 from dataset_loader import *
 from constants import *
-
+import time
 
 class NeuralNetwork(nn.Module):
     def __init__(self, grid_size=40, num_classes=1, numb_bounding_boxes=1):
@@ -77,9 +77,9 @@ def draw_bounding_box(image, tensors):
     return image
 if __name__ == "__main__":
     torch.manual_seed(1)
-
+    start_time = time.time()
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    dataset = DatasetLoader('highway', num_bounding_boxes=constants.MAX_NUM_BBOXES)
+    dataset = DatasetLoader('highway',max_images=10_000, num_bounding_boxes=constants.MAX_NUM_BBOXES)
     train_dataset, val_dataset, test_dataset = torch.utils.data.random_split(dataset, [0.8, 0.1, 0.1])
 
     num_workers = 4
@@ -89,13 +89,13 @@ if __name__ == "__main__":
 
 
     model = NeuralNetwork(grid_size=30, num_classes=6, numb_bounding_boxes=constants.MAX_NUM_BBOXES).to(device)
-    optimizer = optim.Adam(model.parameters(), lr=1e-3)
+    optimizer = optim.Adam(model.parameters(), lr=1e-4)
     criterion = nn.MSELoss()
 
-    max_no_improvement = 5
+    max_no_improvement = 50
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=0.5, patience=max_no_improvement)
 
-    num_epochs = 1
+    num_epochs = 10
     for epoch in range(num_epochs):
         model.train()
         running_loss = 0.0
@@ -112,19 +112,22 @@ if __name__ == "__main__":
             if i % 100 == 99: # Print stats every 100 batches
                 print(f'Epoch [{epoch+1}/{num_epochs}], Batch [{i+1}/{len(train_loader)}], Batch Loss: {(running_loss/100):.4f}')
                 running_loss = 0.0
-            if i % 25 == 0:
-                scheduler.step(loss)
+
+            scheduler.step(loss)
         print(f'Epoch [{epoch+1}/{num_epochs}], Loss: {loss.item():.4f}')
         # Validation
-        model.eval()
-        random_index = random.randint(0, len(val_dataset) - 1)
-        random_sample = val_dataset[random_index]
-        _, target = random_sample
-        image = dataset.get_original_image(random_index)
-        output_image = draw_bounding_box(image, target)
-        cv2.imshow('Output', output_image)
-        cv2.waitKey(0)
 
+    model.eval()
+    random_index = random.randint(0, len(val_dataset) - 1)
+    random_sample = val_dataset[random_index]
+    _, target = random_sample
+    image = dataset.get_original_image(random_index)
+    output_image = draw_bounding_box(image, target)
+    cv2.imshow('Output', output_image)
+    cv2.waitKey(0)
+
+    stop_time = time.time()
+    print(f"Total time taken: {stop_time - start_time:.2f} seconds")
 
 
 
