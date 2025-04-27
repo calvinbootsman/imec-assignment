@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import torchvision.models as models
 import os
 import random
 import json
@@ -20,29 +21,70 @@ class NeuralNetwork(nn.Module):
         self.output_features_per_box = (num_boxes * 5) + num_classes
         self.input_dims = (3, constants.IMAGE_HEIGHT, constants.IMAGE_WIDTH)
 
-        self.cnn = nn.Sequential(
+        # Load pre-trained ResNet50
+        base_model = models.resnet50(pretrained=True)
+
+        # Remove the last fully connected layer
+        base_model = nn.Sequential(*list(base_model.children())[:-2])
+
+        # Freeze the base model
+        for param in base_model.parameters():
+            param.requires_grad = False
+
+        NUM_FILTERS = 512
+        cnn = nn.Sequential(
             # Based on the VGG16 architecture
             # https://arxiv.org/pdf/1409.1556.pdf
-            nn.Conv2d(3, 16, kernel_size=3, stride=1, padding=1),
-            nn.LeakyReLU(0.1, inplace=True),
-            nn.MaxPool2d(kernel_size=2, stride=2),
-            nn.Conv2d(16, 32, kernel_size=3, stride=1, padding=1),
-            nn.LeakyReLU(0.1, inplace=True),
-            nn.MaxPool2d(kernel_size=2, stride=2),
-            nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1),
-            nn.LeakyReLU(0.1, inplace=True),
-            nn.MaxPool2d(kernel_size=2, stride=2),
-            nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1),
-            nn.LeakyReLU(0.1, inplace=True),
-            nn.MaxPool2d(kernel_size=2, stride=2),
-            nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=1),
-            nn.LeakyReLU(0.1, inplace=True),
+            nn.Conv2d(2048, NUM_FILTERS, kernel_size=3, padding=1),
+            nn.BatchNorm2d(NUM_FILTERS),
+            nn.LeakyReLU(0.1),
+            
+            nn.Conv2d(NUM_FILTERS, NUM_FILTERS, kernel_size=3, padding=1),
+            nn.BatchNorm2d(NUM_FILTERS),
+            nn.LeakyReLU(0.1),
+            
+            nn.Conv2d(NUM_FILTERS, NUM_FILTERS, kernel_size=3, padding=1),
+            nn.BatchNorm2d(NUM_FILTERS),
+            nn.LeakyReLU(0.1),
+            # nn.Conv2d(3, 16, kernel_size=3, stride=1, padding=1),
+            # nn.LeakyReLU(0.1, inplace=True),
+            # nn.MaxPool2d(kernel_size=2, stride=2),
+            # nn.Conv2d(16, 32, kernel_size=3, stride=1, padding=1),
+            # nn.LeakyReLU(0.1, inplace=True),
+            # nn.MaxPool2d(kernel_size=2, stride=2),
+            # nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1),
+            # nn.LeakyReLU(0.1, inplace=True),
+            # nn.MaxPool2d(kernel_size=2, stride=2),
+            # nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1),
+            # nn.LeakyReLU(0.1, inplace=True),
+            # nn.MaxPool2d(kernel_size=2, stride=2),
+            # nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=1),
+            # nn.LeakyReLU(0.1, inplace=True),
         )
 
-        with torch.no_grad():
-            dummy_input = torch.zeros(1, *self.input_dims) 
-            cnn_out_shape = self.cnn(dummy_input).shape
-            self.flattened_size = cnn_out_shape[1] * cnn_out_shape[2] * cnn_out_shape[3]
+        flatten = nn.Flatten()
+
+        dense_layers = nn.Sequential(
+            nn.Linear(NUM_FILTERS * (constants.IMAGE_HEIGHT // 32) * (constants.IMAGE_WIDTH // 32), NUM_FILTERS),
+            nn.BatchNorm1d(NUM_FILTERS),
+            nn.LeakyReLU(0.1),
+            
+            nn.Linear(NUM_FILTERS, int(constants.GRID_SIZE * constants.GRID_SIZE * self.output_features_per_cell)),
+            nn.Sigmoid()
+        )
+
+        # Combine all layers into a single sequential model
+        self.model = nn.Sequential(
+            base_model,
+            cnn,
+            flatten,
+            dense_layers,
+            nn.Unflatten(1, (constants.GRID_SIZE, constants.GRID_SIZE, self.output_features_per_cell))
+        )
+        # with torch.no_grad():
+        #     dummy_input = torch.zeros(1, *self.input_dims) 
+        #     cnn_out_shape = self.cnn(dummy_input).shape
+        #     self.flattened_size = cnn_out_shape[1] * cnn_out_shape[2] * cnn_out_shape[3]
 
         # Fully connected layers
         self.detection_head  = nn.Sequential(
@@ -52,45 +94,113 @@ class NeuralNetwork(nn.Module):
             nn.Conv2d(512, self.output_features_per_cell, kernel_size=1, stride=1, padding=0)
         )
 
-        self.fc = nn.Sequential(
-            nn.Flatten(), 
-            nn.Linear(self.flattened_size, 1024),
-            nn.ReLU(),
-            nn.Dropout(0.1), 
-            nn.Linear(1024, self.num_boxes * self.output_features_per_box)
-        )
+        # self.fc = nn.Sequential(
+        #     nn.Flatten(), 
+        #     nn.Linear(self.flattened_size, 1024),
+        #     nn.ReLU(),
+        #     nn.Dropout(0.1), 
+        #     nn.Linear(1024, self.num_boxes * self.output_features_per_box)
+        # )
     def forward(self, x):
-        features = self.cnn(x)
-        predictions = self.detection_head(features)
-        # predictions = predictions.view(-1, self.num_boxes, self.output_features_per_box)
-        predictions = predictions.permute(0, 2, 3, 1)
-        return predictions
+        # features = self.cnn(x)
+        # predictions = self.detection_head(features)
+        # # predictions = predictions.view(-1, self.num_boxes, self.output_features_per_box)
+        # predictions = predictions.permute(0, 2, 3, 1)
+        return self.model(x)
+def difference(x, y):
+    return torch.sum((y - x)**2)
+
+def yolo_loss(target, predictions):
+    """
+    Custom YOLO loss function.
+    Args:
+        y_true (torch.Tensor): Ground truth tensor of shape (batch_size, S, S, B*5 + C).
+        y_predictions (torch.Tensor): Predicted tensor of shape (batch_size, S, S, B*5 + C).
+    Returns:
+        torch.Tensor: Computed loss value.
+    """
+    pred_boxes = []
+    pred_confs = []
+    B = constants.MAX_NUM_BBOXES
+    S = constants.GRID_SIZE
+    C = constants.NUM_OF_CLASSES
+    mse = nn.MSELoss(reduction="sum")
+    lambda_noobj = 0.5
+    lambda_coord = 5
+    for b in range(B):
+        offset = b * 5
+        pred_boxes.append(predictions[..., offset : offset+4])
+        pred_confs.append(predictions[..., offset+4 : offset+5]) # Keep dim
+    pred_classes = predictions[..., B*5 :]
+
+    target_box = target[..., 0:4] # [x, y, w, h]
+    target_conf = target[..., 4:5] # Confidence (objectness) - should be 1 if object present, 0 otherwise
+    target_classes = target[..., B*5 :] # One-hot encoded classes
     
+    exists_box = target_conf  # target_conf used as a mask
 
-labels = ['SIZE_VEHICLE_M', 'SIZE_VEHICLE_XL', 'TRAFFIC_SIGN', 'TRAFFIC_LIGHT', 'PEDESTRIAN', 'TWO_WHEEL_WITHOUT_RIDER', 'RIDER']
+    # Loss Box coordinates (x, y, w, h)
+    box_predictions = exists_box * pred_boxes[0]
+    # Target box coordinates
+    box_targets = exists_box * target_box
+    box_predictions[..., 2:4] = torch.sign(box_predictions[..., 2:4]) * torch.sqrt(
+        torch.abs(box_predictions[..., 2:4] + 1e-6)
+    )
+    box_targets[..., 2:4] = torch.sqrt(box_targets[..., 2:4] + 1e-6) # Target w,h are always >= 0
 
-def draw_bounding_box(image, tensors):
-    height, width, _ = image.shape
+    # Calculate MSE loss for coordinates (x, y, sqrt(w), sqrt(h))
+    # (BATCH, S, S, 4) -> scalar
+    box_loss = mse(
+        torch.flatten(box_predictions, end_dim=-2), # Flatten (BATCH*S*S, 4)
+        torch.flatten(box_targets, end_dim=-2),
+    )
+    
+    # Loss Object
+    pred_conf_obj = exists_box * pred_confs[0] # (BATCH, S, S, 1)
+    target_conf_obj = exists_box * target_conf # Target is already 1 where object exists
+    object_loss = mse(
+            torch.flatten(pred_conf_obj), # Flatten (BATCH*S*S)
+            torch.flatten(target_conf_obj)
+    )
 
-    for box in tensors:
-        x_center = box[1] * width
-        y_center = box[2] * height
-        width_box = box[3] * width
-        height_box = box[4] * height
-        x1 = int(x_center - width_box / 2)
-        y1 = int(y_center - height_box / 2)
-        x2 = int(x_center + width_box / 2)
-        y2 = int(y_center + height_box / 2)
+    # Loss No Object
+    no_object_loss = 0.0
+    no_exists_box = (1.0 - exists_box) # Mask for cells without objects
+    for b in range(B):
+            pred_conf_noobj = no_exists_box * pred_confs[b]
+            target_conf_noobj = no_exists_box * torch.zeros_like(target_conf) # Target is 0
+            no_object_loss += mse(
+                torch.flatten(pred_conf_noobj), # Flatten (BATCH*S*S)
+                torch.flatten(target_conf_noobj) # Flatten (BATCH*S*S) - this is just zeros
+            )
+    # Loss Class
+    pred_classes_obj = exists_box * pred_classes # (BATCH, S, S, C)
+    target_classes_obj = exists_box * target_classes # (BATCH, S, S, C)
 
-        cv2.rectangle(image, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 0), 2)
-    return image
+    class_loss = mse(
+        torch.flatten(pred_classes_obj, end_dim=-2), # Flatten (BATCH*S*S, C)
+        torch.flatten(target_classes_obj, end_dim=-2)
+    )
+
+    total_loss = (
+        lambda_coord * box_loss          # Localization loss
+        + object_loss                         # Confidence loss (object present)
+        + lambda_noobj * no_object_loss  # Confidence loss (no object present)
+        + class_loss                          # Classification loss
+    )
+
+    # Average loss over the batch size
+    batch_size = predictions.shape[0]
+    total_loss = total_loss / batch_size
+
+    return total_loss
 
 def draw_bounding_boxes_yolo(image: np.ndarray,
                              tensor_data: torch.Tensor,
                              grid_size: int,
                              num_boxes: int,
                              num_classes: int,
-                             class_names: list = constants.LABEL_MAP.keys(),
+                             class_names: list = constants.LABEL_MAP,
                              threshold: float = 0.5):
     """
     Draws bounding boxes on an image based on a YOLO-style output tensor.
@@ -169,8 +279,8 @@ def draw_bounding_boxes_yolo(image: np.ndarray,
 
                     # Get the class name
                     label = "Unknown"
-                    for keys, value in class_names:
-                        if value == class_index:
+                    for keys, value in class_names.items():
+                        if class_index == value:
                             label = keys
                             break
                     
@@ -193,29 +303,32 @@ def draw_bounding_boxes_yolo(image: np.ndarray,
     return image
 
 if __name__ == "__main__":
-    torch.manual_seed(3)
+    random.seed(42)
+    torch.manual_seed(5) #3
+    
     start_time = time.time()
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     dataset = DatasetLoader('highway',max_images=1_000, num_boxes_per_cell=constants.MAX_NUM_BBOXES, grid_size=constants.GRID_SIZE)
     train_dataset, val_dataset, test_dataset = torch.utils.data.random_split(dataset, [0.8, 0.1, 0.1])
 
     num_workers = 7
-    train_loader = torch.utils.data.DataLoader(train_dataset, num_workers=num_workers, batch_size=32, shuffle=True)
+    train_loader = torch.utils.data.DataLoader(train_dataset, num_workers=num_workers, batch_size=64, shuffle=True)
     val_loader = torch.utils.data.DataLoader(val_dataset, num_workers=num_workers, batch_size=32, shuffle=False)
     test_loader = torch.utils.data.DataLoader(test_dataset, num_workers=num_workers, batch_size=32, shuffle=False)
 
     model = NeuralNetwork(grid_size=constants.GRID_SIZE, num_classes=constants.NUM_OF_CLASSES, num_boxes=constants.MAX_NUM_BBOXES).to(device)
-    optimizer = optim.Adam(model.parameters(), lr=1e-3)
-    criterion = nn.MSELoss()
+    optimizer = optim.Adam(model.parameters(), lr=1e-2)
+    criterion = yolo_loss
 
-    max_no_improvement = 10
+    max_no_improvement = 50
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=0.1, patience=max_no_improvement)
 
     num_epochs = 10
     for epoch in range(num_epochs):
         model.train()
         running_loss = 0.0
-        for i, (batch_data_item, batch_targets) in enumerate(train_loader):
+        i = 0
+        for batch_data_item, batch_targets in train_loader:
             image = batch_data_item.to(device)
             batch_targets = batch_targets.to(device)
             optimizer.zero_grad()
@@ -225,10 +338,11 @@ if __name__ == "__main__":
             optimizer.step()
             running_loss += loss.item()
             if i % 100 == 99: # Print stats every 100 batches
-                print(f'Epoch [{epoch+1}/{num_epochs}], Batch [{i+1}/{len(train_loader)}], Batch Loss: {(running_loss/100):.4f}')
+                print(f'Epoch [{epoch+1}/{num_epochs}], Batch [{i+1}/{len(train_loader)}], Batch Loss: {(running_loss/100)}')
                 running_loss = 0.0
 
-            scheduler.step(loss)
+            
+            i += 1
         # Validation
         val_loss = 0.0
         model.eval()
@@ -238,23 +352,37 @@ if __name__ == "__main__":
                 batch_targets = batch_targets.to(device)
                 outputs = model(image)
                 loss = criterion(outputs, batch_targets)
+                scheduler.step(loss)
                 val_loss += loss.item()
         val_loss /= len(val_loader)
-        print(f'Epoch [{epoch+1}/{num_epochs}], Validation Loss: {val_loss:.4f}, Learning Rate: {scheduler.optimizer.param_groups[0]["lr"]:.6f}')
+        
+        print(f'Epoch [{epoch+1}/{num_epochs}], Validation Loss: {val_loss}, Learning Rate: {scheduler.optimizer.param_groups[0]["lr"]}')
 
     model.eval()
-    random_index = random.randint(0, len(val_dataset) - 1)
-    random_sample = val_dataset[random_index]
-    image_tensor, _ = random_sample
-    image_tensor = image_tensor.unsqueeze(0).to(device)  # Add batch dimension and move to device
+    random.seed(42)  # For reproducibility
+    random_index = random.randint(0, len(dataset) - 1)
+    random_sample = dataset[random_index]
+    image_tensor, target = random_sample
     image = dataset.get_original_image(random_index)
+    output_image = draw_bounding_boxes_yolo(image, target, constants.GRID_SIZE, constants.MAX_NUM_BBOXES, constants.NUM_OF_CLASSES)
+    cv2.imshow('Output', output_image)
+    cv2.waitKey(0)
+
+    image_tensor = image_tensor.unsqueeze(0).to(device)  # Add batch dimension and move to device
+    # image = dataset.get_original_image(random_index)
     outputs = model(image_tensor)
     output_image = draw_bounding_boxes_yolo(image, outputs[0], constants.GRID_SIZE, constants.MAX_NUM_BBOXES, constants.NUM_OF_CLASSES)
     cv2.imshow('Output', output_image)
     cv2.waitKey(0)
+    # Save the model
 
-    stop_time = time.time()
-    print(f"Total time taken: {stop_time - start_time:.2f} seconds")
+    current_time = time.strftime("%Y%m%d-%H%M%S")
+    model_save_path = os.path.join('models', f'model_{current_time}.pth')
+    os.makedirs('models', exist_ok=True)
+    torch.save(model.state_dict(), model_save_path)
+    print(f"Model saved to {model_save_path}")
+    # stop_time = time.time()
+    # print(f"Total time taken: {stop_time - start_time:.2f} seconds")
 
         # val_loss = 0.0
         # with torch.no_grad():
