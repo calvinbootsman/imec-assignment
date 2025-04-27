@@ -29,8 +29,8 @@ class BoundingBoxDataItem:
         x1_f, y1_f, x2_f, y2_f = float(x1), float(y1), float(x2), float(y2)
         self.x_center = (x1_f + x2_f) / 2
         self.y_center = (y1_f + y2_f) / 2
-        self.width = x2_f - x1_f
-        self.height = y2_f - y1_f
+        self.width = abs(x2_f - x1_f)
+        self.height = abs(y2_f - y1_f)
 
 class RadarDataItem:
     def __init__(self, azimuth, range, rcs):
@@ -39,22 +39,20 @@ class RadarDataItem:
         self.rcs = rcs
 
 class DatasetLoader:
-    def __init__(self, driving_style='highway', max_images=-1, num_bounding_boxes=1):
+    def __init__(self, driving_style='highway', max_images=-1, num_boxes_per_cell=2, grid_size=7):
         self.data_path = f'train/{driving_style}'
         self.image_paths = []
         self.data_set = []
         self.max_images = max_images
-        self.num_bounding_boxes = num_bounding_boxes
+        self.num_boxes_per_cell = num_boxes_per_cell
+        self.S = grid_size
 
         self._index_images()
 
         self.label_map = {
             'SIZE_VEHICLE_M': 0,
-            'SIZE_VEHICLE_XL': 1,
-            'PEDESTRIAN': 2,
-            'TWO_WHEEL_WITHOUT_RIDER': 3,
-            'RIDER': 4,
-            'NONE': 5,
+            'SIZE_VEHICLE_XL': 0,
+            'PEDESTRIAN': 1,
         } 
         
     def __getitem__(self, index):
@@ -64,21 +62,20 @@ class DatasetLoader:
         while True:
             try:
                 image_name = os.path.basename(image_path)
-                scene = image_path.split('/')[-5]
-                camera = image_path.split('/')[-2]
+                scene = image_path.split(os.sep)[-5]
+                camera = image_path.split(os.sep)[-2]
                 file_number = image_name.replace('.jpg', '').replace(camera, '').replace('_', '')
                 
-                image, original_size = self._image_loader(image_path)
+                image_tensor, original_size = self._image_loader(image_path)
                 bounding_box_data, target = self._bounding_box_loader(scene, camera, image_name, original_size)                   
                 radar_data = self._radar_loader(self.data_path, scene, file_number)
-                data_item = DataItem(image, radar_data, bounding_box_data, image_path=image_path)
+                # data_item = DataItem(image_tensor, radar_data, bounding_box_data, image_path=image_path)
 
-                return data_item.to_input(), target
+                return image_tensor, target
                 
             except Exception as e:
                 print(f"Error: {e}")
                 continue
-
             
     def __len__(self):
         return len(self.image_paths)
@@ -94,8 +91,12 @@ class DatasetLoader:
         else:
             new_path = image_path.replace(self.data_path, 'train/scaled_images')
             image = cv2.imread(new_path)
-            original_size = (constants.IMAGE_HEIGHT, constants.IMAGE_WIDTH) 
-
+            # original_size = (constants.IMAGE_HEIGHT, constants.IMAGE_WIDTH)
+            if  "B_MIDRANGECAM_C" in image_path:
+                original_size = (1920, 1216)
+            else:
+                original_size = (704, 1280)
+        image = image.astype('float32') / 255.0
         transform = transforms.Compose([transforms.ToTensor()])
         tensor = transform(image)
 
@@ -107,11 +108,16 @@ class DatasetLoader:
         """
         box_file = image_name.replace('.jpg', '.json')
         box_data = f'{self.data_path}/{scene}/dynamic/box/2d/{camera}/{box_file}'
+
+        
         target_list = []
         bounding_boxes = []
+        original_height, original_width = original_size
         if not os.path.exists(box_data):
             for _ in range(self.num_bounding_boxes):
-                target =[0, 0, 0, 0, 0, 0.0]
+                label_array = [0.0] * (self.label_map['NONE'] + 1)
+                label_array[-1] = 1.0
+                target =label_array + [0, 0, 0, 0, 0.0] # label outputs + bounding box coordinates + confidence score
                 target_list.append(target)
         
         else:
@@ -129,10 +135,10 @@ class DatasetLoader:
                         and isinstance(box, dict) \
                         and all(k in box and box[k] is not None for k in ['BoundingBox2D X1', 'BoundingBox2D Y1', 'BoundingBox2D X2', 'BoundingBox2D Y2', 'ObjectType']):
                         bounding_boxes_coords.append([
-                            box['BoundingBox2D X1'] / original_size[1],
-                            box['BoundingBox2D Y1'] / original_size[0],
-                            box['BoundingBox2D X2'] / original_size[1],
-                            box['BoundingBox2D Y2'] / original_size[0]
+                            box['BoundingBox2D X1'] / original_width,
+                            box['BoundingBox2D Y1'] / original_height,
+                            box['BoundingBox2D X2'] / original_width,
+                            box['BoundingBox2D Y2'] / original_height
                         ])
                         bounding_boxes_labels.append(box['ObjectType'])
                 bounding_boxes = []
@@ -148,13 +154,18 @@ class DatasetLoader:
                 for i in range(len(bounding_boxes)):
                     x_center, y_center, width, height = bounding_boxes[i].x_center, bounding_boxes[i].y_center, bounding_boxes[i].width, bounding_boxes[i].height
                     label = self.label_map.get(bounding_boxes_labels[i], -1)
-                    target_list.append([label, x_center, y_center, width, height, 1.0]) # 1.0 is the confidence score
+                    label_array = [0.0] * (self.label_map['NONE'] + 1)
+                    label_array[label] = 1.0
+                    target_list.append(label_array + [x_center, y_center, width, height, 1.0]) # 1.0 is the confidence score
 
                 if len(target_list) > self.num_bounding_boxes:
                     print(f"Warning: More bounding boxes than expected. Found {len(target_list)} but expected {self.num_bounding_boxes}.")
 
                 for i in range(self.num_bounding_boxes -  len(target_list)):
-                    target_list.append([0, 0, 0, 0, 0, 0.0])
+                    label_array = [0.0] * (self.label_map['NONE'] + 1)
+                    label_array[-1] = 1.0
+                    target =label_array + [0, 0, 0, 0, 0.0]
+                    target_list.append(target)
 
         target_list = torch.tensor(target_list, dtype=torch.float32)
         return bounding_boxes, target_list  
