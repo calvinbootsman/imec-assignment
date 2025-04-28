@@ -6,3 +6,5 @@
 /train
 /val
 /__pycache__
+/models
+/processed_data
