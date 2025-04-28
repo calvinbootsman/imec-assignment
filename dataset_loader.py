@@ -50,7 +50,9 @@ class DatasetLoader:
         self.S = grid_size
         self.C = constants.NUM_OF_CLASSES
 
-        self._index_images()
+        with open('processed_data/image_paths.txt', 'r') as file:
+            self.image_paths = [line.strip() for line in file.readlines()]
+        # self._index_images()
 
         self.label_map = {
             'SIZE_VEHICLE_M': 0,
@@ -59,26 +61,35 @@ class DatasetLoader:
         } 
         
     def __getitem__(self, index):
-        if index >= len(self.image_paths):
-            raise IndexError("Index out of range")
-        image_path = self.image_paths[index]
-        while True:
-            try:
-                image_name = os.path.basename(image_path)
-                scene = image_path.split('/')[-5]
-                camera = image_path.split('/')[-2]
-                file_number = image_name.replace('.jpg', '').replace(camera, '').replace('_', '')
-                
-                image_tensor, original_size = self._image_loader(image_path)
-                target = self._bounding_box_loader(scene, camera, image_name, original_size)                   
-                radar_data = self._radar_loader(self.data_path, scene, file_number)
-                # data_item = DataItem(image_tensor, radar_data, bounding_box_data, image_path=image_path)
+        path = f'processed_data/sample_{index:06d}.pth'
+        if not os.path.exists(path):
+             raise IndexError("Index out of range")
+    
+        data_entry = torch.load(path)
+        image_tensor = data_entry['image']
+        target = data_entry['target']
+        return image_tensor, target
 
-                return image_tensor, target
+        # if index >= len(self.image_paths):
+        #     raise IndexError("Index out of range")
+        # image_path = self.image_paths[index]
+        # while True:
+        #     try:
+        #         image_name = os.path.basename(image_path)
+        #         scene = image_path.split('/')[-5]
+        #         camera = image_path.split('/')[-2]
+        #         file_number = image_name.replace('.jpg', '').replace(camera, '').replace('_', '')
                 
-            except Exception as e:
-                print(f"Error: {e}")
-                continue
+        #         image_tensor, original_size = self._image_loader(image_path)
+        #         target = self._bounding_box_loader(scene, camera, image_name, original_size)                   
+        #         radar_data = self._radar_loader(self.data_path, scene, file_number)
+        #         # data_item = DataItem(image_tensor, radar_data, bounding_box_data, image_path=image_path)
+
+        #         return image_tensor, target
+                
+        #     except Exception as e:
+        #         print(f"Error: {e}")
+        #         continue
             
     def __len__(self):
         return len(self.image_paths)
