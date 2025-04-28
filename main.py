@@ -1,7 +1,10 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from torch.optim.lr_scheduler import LinearLR, MultiStepLR, SequentialLR
 import torchvision.models as models
+import torch.cuda.amp as amp
+from torchvision.models import ResNet50_Weights
 import os
 import random
 import json
@@ -10,6 +13,8 @@ from dataset_loader import *
 from constants import *
 import time
 import numpy as np
+from cProfile import Profile
+from pstats import SortKey, Stats
 
 class NeuralNetwork(nn.Module):
     def __init__(self, grid_size=16, num_classes=1, num_boxes=1):
@@ -22,7 +27,7 @@ class NeuralNetwork(nn.Module):
         self.input_dims = (3, constants.IMAGE_HEIGHT, constants.IMAGE_WIDTH)
 
         # Load pre-trained ResNet50
-        base_model = models.resnet50(pretrained=True)
+        base_model = models.resnet50(weights=ResNet50_Weights.IMAGENET1K_V1)
 
         # Remove the last fully connected layer
         base_model = nn.Sequential(*list(base_model.children())[:-2])
@@ -90,6 +95,7 @@ class NeuralNetwork(nn.Module):
         self.detection_head  = nn.Sequential(
             nn.Conv2d(256, 512, kernel_size=3, stride=1, padding=1), # Extra conv layers often help
             nn.LeakyReLU(0.1, inplace=True),
+            nn.Dropout(0.5),
             # Final convolution maps features to the desired output shape per cell
             nn.Conv2d(512, self.output_features_per_cell, kernel_size=1, stride=1, padding=0)
         )
@@ -301,63 +307,120 @@ def draw_bounding_boxes_yolo(image: np.ndarray,
                     cv2.putText(image, label_text, (x1, y1 - baseline), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1) # Black text
 
     return image
+def save_model(model, time):
+    """
+    Save the model to the specified path.
+    """
+    model_save_path = os.path.join('models', f'model_{time}.pth')
+    os.makedirs('models', exist_ok=True)
+    torch.save(model.state_dict(), model_save_path)
+    print(f"Model saved to {model_save_path}")
 
 if __name__ == "__main__":
     random.seed(42)
     torch.manual_seed(5) #3
     
     start_time = time.time()
+    
+
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    dataset = DatasetLoader('highway',max_images=1_000, num_boxes_per_cell=constants.MAX_NUM_BBOXES, grid_size=constants.GRID_SIZE)
+    with Profile() as pr:
+        pr.enable()
+        dataset = DatasetLoader('highway', num_boxes_per_cell=constants.MAX_NUM_BBOXES, grid_size=constants.GRID_SIZE)
+        pr.disable()
+        stats = Stats(pr)
+        stats.sort_stats(SortKey.TIME)
+        stats.print_stats(10)  # Print the top 10 functions by time
     train_dataset, val_dataset, test_dataset = torch.utils.data.random_split(dataset, [0.8, 0.1, 0.1])
 
-    num_workers = 7
-    train_loader = torch.utils.data.DataLoader(train_dataset, num_workers=num_workers, batch_size=64, shuffle=True)
-    val_loader = torch.utils.data.DataLoader(val_dataset, num_workers=num_workers, batch_size=32, shuffle=False)
-    test_loader = torch.utils.data.DataLoader(test_dataset, num_workers=num_workers, batch_size=32, shuffle=False)
+    num_workers = 4
+    train_loader = torch.utils.data.DataLoader(train_dataset, num_workers=num_workers, batch_size=32, shuffle=True, pin_memory=True)
+    val_loader = torch.utils.data.DataLoader(val_dataset, num_workers=num_workers, batch_size=32, shuffle=False, pin_memory=True)
+    test_loader = torch.utils.data.DataLoader(test_dataset, num_workers=num_workers, batch_size=32, shuffle=False, pin_memory=True)
 
     model = NeuralNetwork(grid_size=constants.GRID_SIZE, num_classes=constants.NUM_OF_CLASSES, num_boxes=constants.MAX_NUM_BBOXES).to(device)
-    optimizer = optim.Adam(model.parameters(), lr=1e-2)
+    
     criterion = yolo_loss
 
-    max_no_improvement = 50
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=0.1, patience=max_no_improvement)
+    max_no_improvement = 500
 
-    num_epochs = 10
-    for epoch in range(num_epochs):
+    # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=0.1, patience=max_no_improvement, min_lr=1e-4)
+
+    scaler = torch.amp.GradScaler(enabled = (device.type == 'cuda'))
+    peak_lr = 1e-2         # The LR achieved *after* warm-up (and start of phase 1)
+    warmup_start_lr = 1e-3 # The LR at the very beginning of training
+    warmup_epochs = 5
+    phase1_epochs = 75
+    phase2_epochs = 30
+    phase3_epochs = 30
+
+    # optimizer = optim.Adam(model.parameters(), lr=1e-3)
+    optimizer = optim.SGD(model.parameters(), lr=peak_lr, momentum=0.9, weight_decay=0.0005)
+    start_factor = warmup_start_lr / peak_lr
+    warmup_scheduler = LinearLR(optimizer,
+                                start_factor=start_factor,
+                                end_factor=1.0, # End at the optimizer's base LR (peak_lr)
+                                total_iters=warmup_epochs)
+    decay_milestones = [
+    warmup_epochs + phase1_epochs,
+    warmup_epochs + phase1_epochs + phase2_epochs
+    ]
+    decay_gamma = 0.1 # Factor to decrease LR by (1e-2 -> 1e-3 -> 1e-4)
+    decay_scheduler = MultiStepLR(optimizer,
+                                milestones=decay_milestones,
+                                gamma=decay_gamma)
+
+    # 3. Combined Scheduler (Sequential)
+    # Switch from warmup_scheduler to decay_scheduler *after* warmup_epochs.
+    # The milestone indicates the epoch index where the *next* scheduler becomes active.
+    sequential_milestones = [warmup_epochs]
+    scheduler = SequentialLR(optimizer,
+                            schedulers=[warmup_scheduler, decay_scheduler],
+                            milestones=sequential_milestones)
+
+    # --- Example Training Loop ---
+    total_epochs = warmup_epochs + phase1_epochs + phase2_epochs + phase3_epochs
+    for epoch in range(total_epochs):
         model.train()
         running_loss = 0.0
         i = 0
+        # with Profile() as pr:
+        #     pr.enable()
         for batch_data_item, batch_targets in train_loader:
-            image = batch_data_item.to(device)
-            batch_targets = batch_targets.to(device)
+            image = batch_data_item.to(device, non_blocking=True)
+            batch_targets = batch_targets.to(device, non_blocking=True)
             optimizer.zero_grad()
-            outputs = model(image)
-            loss = criterion(outputs, batch_targets)
+            with torch.amp.autocast(device_type='cuda'):
+                outputs = model(image)
+                loss = criterion(outputs, batch_targets)
             loss.backward()
             optimizer.step()
             running_loss += loss.item()
-            if i % 100 == 99: # Print stats every 100 batches
-                print(f'Epoch [{epoch+1}/{num_epochs}], Batch [{i+1}/{len(train_loader)}], Batch Loss: {(running_loss/100)}')
+            if i % 100 == 99:  # Print stats every 100 batches
+                print(f'Epoch [{epoch+1}/{total_epochs}], Batch [{i+1}/{len(train_loader)}], Batch Loss: {(running_loss/100)}')
                 running_loss = 0.0
-
-            
             i += 1
+        #     pr.disable()
+        # stats = Stats(pr)
+        # stats.sort_stats(SortKey.TIME)
+        # stats.print_stats(10)  # Print the top 10 functions by time
+
         # Validation
+        scheduler.step()
         val_loss = 0.0
         model.eval()
         with torch.no_grad():
             for i, (batch_data_item, batch_targets) in enumerate(val_loader):
                 image = batch_data_item.to(device)
                 batch_targets = batch_targets.to(device)
-                outputs = model(image)
-                loss = criterion(outputs, batch_targets)
-                scheduler.step(loss)
+                with torch.amp.autocast(device_type='cuda'):
+                    outputs = model(image)
+                    loss = criterion(outputs, batch_targets)
                 val_loss += loss.item()
         val_loss /= len(val_loader)
-        
-        print(f'Epoch [{epoch+1}/{num_epochs}], Validation Loss: {val_loss}, Learning Rate: {scheduler.optimizer.param_groups[0]["lr"]}')
 
+        print(f'Epoch [{epoch+1}/{total_epochs}], Validation Loss: {val_loss}, Learning Rate: {scheduler.optimizer.param_groups[0]["lr"]}')
+        save_model(model, start_time)
     model.eval()
     random.seed(42)  # For reproducibility
     random_index = random.randint(0, len(dataset) - 1)

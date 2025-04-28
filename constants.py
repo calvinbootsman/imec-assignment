@@ -5,7 +5,7 @@ class constants:
 
     MAX_NUM_BBOXES = 2
 
-    PRESCALE = False  
+    PRESCALE = True  
 
     LABEL_MAP =  {
             'SIZE_VEHICLE_M': 0,
