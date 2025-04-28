@@ -141,7 +141,7 @@ def load_latest_model(models_folder: str):
     return model
 
 if __name__ == "__main__":
-    random.seed(42)
+    random.seed(4)
     torch.manual_seed(5) #3
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -154,11 +154,11 @@ if __name__ == "__main__":
     for i in range(5):
         random_index = random.randint(0, len(dataset) - 1)
         random_sample = dataset[random_index]
-        image_tensor, target = random_sample
+        image_tensor, targets_tensor, radar, camera = random_sample
         image = dataset.get_original_image(random_index)
         image_tensor = image_tensor.unsqueeze(0).to(device)
         outputs = latest_model(image_tensor)
-        output_image = draw_bounding_boxes_yolo(image, outputs[0], constants.GRID_SIZE, constants.MAX_NUM_BBOXES, constants.NUM_OF_CLASSES, threshold=0.6)
+        output_image = draw_bounding_boxes_yolo(image, outputs[0], constants.GRID_SIZE, constants.MAX_NUM_BBOXES, constants.NUM_OF_CLASSES, threshold=0.55)
         # images.append(output_image)
         cv2.imshow("YOLO Output", output_image)
         cv2.waitKey(0)

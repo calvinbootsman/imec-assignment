@@ -277,10 +277,10 @@ if __name__ == "__main__":
     
     start_time = time.time()
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    dataset = DatasetLoader('highway',max_images=1_000, num_boxes_per_cell=constants.MAX_NUM_BBOXES, grid_size=constants.GRID_SIZE)
+    dataset = DatasetLoader('highway', num_boxes_per_cell=constants.MAX_NUM_BBOXES, grid_size=constants.GRID_SIZE)
     train_dataset, val_dataset, test_dataset = torch.utils.data.random_split(dataset, [0.8, 0.1, 0.1])
 
-    num_workers = 4
+    num_workers = 8
     train_loader = torch.utils.data.DataLoader(train_dataset, num_workers=num_workers, batch_size=32, shuffle=True, pin_memory=True)
     val_loader = torch.utils.data.DataLoader(val_dataset, num_workers=num_workers, batch_size=32, shuffle=False, pin_memory=True)
     test_loader = torch.utils.data.DataLoader(test_dataset, num_workers=num_workers, batch_size=32, shuffle=False, pin_memory=True)
@@ -290,7 +290,14 @@ if __name__ == "__main__":
     criterion = yolo_loss
 
     max_no_improvement = 500
+#2 237
+#3 221
+#4 183
+#5 165
+#6 154
+#7 147
 
+#12 166
     # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=0.1, patience=max_no_improvement, min_lr=1e-4)
 
     scaler = torch.amp.GradScaler(enabled = (device.type == 'cuda'))
@@ -333,13 +340,15 @@ if __name__ == "__main__":
         i = 0
         # with Profile() as pr:
         #     pr.enable()
-        for batch_data_item, batch_targets in train_loader:
+        start_time = time.time()
+        for batch_data_item, batch_targets, batch_radar, batch_camera in train_loader:
             image = batch_data_item.to(device, non_blocking=True)
             batch_targets = batch_targets.to(device, non_blocking=True)
             optimizer.zero_grad()
             with torch.amp.autocast(device_type='cuda'):
                 outputs = model(image)
-                loss = criterion(outputs, batch_targets)
+                image_target = batch_targets[..., :-1]  # Excl
+                loss = criterion(outputs, image_target)
             loss.backward()
             optimizer.step()
             running_loss += loss.item()
@@ -357,16 +366,17 @@ if __name__ == "__main__":
         val_loss = 0.0
         model.eval()
         with torch.no_grad():
-            for i, (batch_data_item, batch_targets) in enumerate(val_loader):
+            for i, (batch_data_item, batch_targets, batch_radar, batch_camera) in enumerate(val_loader):
                 image = batch_data_item.to(device)
                 batch_targets = batch_targets.to(device)
                 with torch.amp.autocast(device_type='cuda'):
                     outputs = model(image)
-                    loss = criterion(outputs, batch_targets)
+                    loss = criterion(outputs, batch_targets[..., :-1])  # Exclude radar and camera data from loss calculation
                 val_loss += loss.item()
         val_loss /= len(val_loader)
-
-        print(f'Epoch [{epoch+1}/{total_epochs}], Validation Loss: {val_loss}, Learning Rate: {scheduler.optimizer.param_groups[0]["lr"]}')
+        end_time = time.time()
+        elapsed_time = end_time - start_time
+        print(f'Epoch [{epoch+1}/{total_epochs}], Validation Loss: {val_loss}, Learning Rate: {scheduler.optimizer.param_groups[0]["lr"]}, Elapsed Time: {elapsed_time:.2f} seconds')
         save_model(model, start_time)
     model.eval()
     random.seed(42)  # For reproducibility

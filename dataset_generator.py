@@ -9,30 +9,6 @@ import cv2
 from constants import *
 import numpy as np
 
-class DataItem:
-    def __init__(self, image_tensor, radar_data, bounding_box_data=None, image_path=None):
-        self.image_tensor = image_tensor 
-        # self.radar_data = radar_data
-        self.bounding_box_data = bounding_box_data
-        self.image_path = image_path
-
-    def __repr__(self):
-        return f"DataItem(image_path={self.image_path}, radar_data_shape={self.radar_data.shape})"
-    
-    def save(self, output_dir, index):
-        if not os.path.exists(output_dir):
-            os.makedirs(output_dir, exist_ok=True)
-        
-        image_name = os.path.basename(self.image_path).replace('.jpg', '.json')
-        # radar_data_path = os.path.join(output_dir, image_name)
-        
-        with open(radar_data_path, 'w') as f:
-            json.dump(self.radar_data, f)
-
-        # Save the image tensor as a numpy array
-        image_tensor_path = os.path.join(output_dir, os.path.basename(self.image_path))
-        np.save(image_tensor_path, self.image_tensor.numpy())
-
 class DatasetGenerator(Dataset):
     def __init__(self, driving_style='highway', max_images=-1, num_boxes_per_cell=2, grid_size=7):
         self.data_path = f'train/{driving_style}'
@@ -51,12 +27,26 @@ class DatasetGenerator(Dataset):
             'SIZE_VEHICLE_XL': 0,
             'PEDESTRIAN': 1,
         }
+
+        self.camera_map = {
+            'B_MIDRANGECAM_C': 0,
+            'F_MIDLONGRANGECAM_CL': 1,
+            'F_MIDLONGRANGECAM_CR': 2,
+            'M_FISHEYE_L': 3,
+            'M_FISHEYE_R': 4,
+        }
+
     def generate(self):
-        output_dir = 'processed_data'
+        output_dir = 'processed_data_with_radar'
         os.makedirs(output_dir, exist_ok=True)
         with open(os.path.join(output_dir, 'image_paths.txt'), 'w') as f:
             for path in self.image_paths:
                 f.write(f"{path}\n")
+        max_azimuth = 0
+        max_rcs = 0
+        max_noise = 0
+        average_rcs = []
+        max_targets = 0
         for i, image_path in enumerate(self.image_paths):
             try:
                 image_name = os.path.basename(image_path)
@@ -66,22 +56,75 @@ class DatasetGenerator(Dataset):
                 
                 image_tensor, original_size = self._image_loader(image_path)
                 target_tensor = self._bounding_box_loader(scene, camera, image_name, original_size)                   
-                # radar_data = self._radar_loader(self.data_path, scene, file_number)
-                # data_item = DataItem(image_tensor, radar_data, bounding_box_data, image_path=image_path)
+                radar_tensor = self._radar_signal_loader(self.data_path, scene, file_number)
+                # size = radar_tensor.shape[0]
+                # if size > max_targets:
+                    # max_targets = size
+                # if targets > max_targets:
+                #     max_targets = targets
+                camera_tensor = self._camera_loader(camera)
+                # max_azimuth = max(max_azimuth, np.abs(azimuth))
+                # max_rcs = max(max_rcs, rcs)
+                # max_noise = max(max_noise, noise)
+                # average_rcs.append(rcs)
                 processed_data = {
                     'image': image_tensor,
-                    'target': target_tensor
-                    # Optional: 'radar': radar_tensor
+                    'target': target_tensor,
+                    'radar': radar_tensor,
+                    'camera': camera_tensor,
                 }
                 # Save the processed data
                 save_path = os.path.join(output_dir, f'sample_{i:06d}.pth')
                 torch.save(processed_data, save_path)
                 if i % 500 == 0:
                     print(f"Processed {i} images. Saved to {save_path}.", end='\r')
+                    
             except Exception as e:
                 print(f"Error: {e}")
                 continue
+        # print(f"\nMax Targets: {max_targets}")
+        # print(f"\nMax Azimuth: {max_azimuth}, Max RCS: {max_rcs}, Max Noise: {max_noise}, Average RCS: {np.median(average_rcs)}")
 
+    def _camera_loader(self, camera: str):
+        output = [0] * 5
+        output[self.camera_map[camera]] = 1
+        return torch.tensor(output, dtype=torch.float32)
+    
+    def _radar_signal_loader(self, data_path: str, scene: str, file_number: str):
+        front_radar_file = f'F_LRR_C_{file_number}.json'
+        back_radar_file = f'B_LRR_C_{file_number}.json'
+        front_radar_full_path = f'{data_path}/{scene}/sensor/radar/F_LRR_C/{front_radar_file}'
+        back_radar_data_full_path = f'{data_path}/{scene}/sensor/radar/B_LRR_C/{back_radar_file}'
+        datasets_paths = [front_radar_full_path, back_radar_data_full_path]
+        radar_data = []
+        max_targets = 0
+        for i, path in enumerate(datasets_paths):
+            if not os.path.exists(path):
+                raise FileNotFoundError(f"Radar data file not found: {path}")
+            
+            with open(path, 'r') as radar_file:
+                data = json.load(radar_file)
+                targets = data.get('targets', [])
+                if len(targets) > max_targets:
+                    max_targets = len(targets)
+                for target in targets:
+                     if isinstance(target, dict) and all(k in target and target[k] is not None for k in ['azimuth', 'range', 'rcs']):
+                        radar_data.append([
+                            np.clip(target['azimuth'] / constants.MAX_AZIMUTH, -1.0, 1.0), # Normalize and clip azimuth
+                            np.clip(target['rcs'] / constants.MAX_RCS, 0.0, 1.0), # Normalize and clip RCS
+                            np.clip(target['noise'] / constants.MAX_NOISE, 0.0, 1.0), # Normalize and clip noise
+                            float(i), # 0 for front, 1 for back
+                            1.0 # for valid targets
+                        ])
+
+        if len(radar_data) < constants.MAX_RADAR_POINTS:
+            radar_data += [[0, 0, 0, 0, 0]] * (constants.MAX_RADAR_POINTS - len(radar_data))
+            radar_tensor = torch.tensor(radar_data, dtype=torch.float32)
+        else:
+            radar_tensor = torch.tensor(radar_data, dtype=torch.float32)
+
+        return radar_tensor
+    
     def _image_loader(self, image_path: str):
         if constants.PRESCALE == False:
             original_image = cv2.imread(image_path)
@@ -93,7 +136,7 @@ class DatasetGenerator(Dataset):
         else:
             new_path = image_path.replace(self.data_path, 'train/scaled_images')
             image = cv2.imread(new_path)
-            # original_size = (constants.IMAGE_HEIGHT, constants.IMAGE_WIDTH)
+
             if  "B_MIDRANGECAM_C" in image_path:
                 original_size = (1920, 1216)
             else:
@@ -108,10 +151,11 @@ class DatasetGenerator(Dataset):
         """
         Loads bounding box data from the specified path.
         """
-        box_file = image_name.replace('.jpg', '.json')
+        box_file = image_name.replace('.jpg', '.json')        
         box_data_path = f'{self.data_path}/{scene}/dynamic/box/2d/{camera}/{box_file}'
-
-        target_tensor = torch.zeros(self.S, self.S, self.B * 5 + self.C, dtype=torch.float32)
+        distance_feature_dim = 1
+        target_tensor = torch.zeros(self.S, self.S, self.B * 5 + self.C + distance_feature_dim, dtype=torch.float32)
+        distance_index = self.B * 5 + self.C
 
         if not os.path.exists(box_data_path):
             return target_tensor
@@ -162,19 +206,49 @@ class DatasetGenerator(Dataset):
                 class_id = self.label_map[object_type] 
 
                 if target_tensor[grid_i, grid_j, 4] == 0:
-                    # Assign Confidence = 1 to the first box slot
-                    target_tensor[grid_i, grid_j, 4] = 1.0
-
                     # Assign Coordinates (rel x,y; image w,h) to the first box slot
                     target_tensor[grid_i, grid_j, 0] = x_rel_cell
                     target_tensor[grid_i, grid_j, 1] = y_rel_cell
                     target_tensor[grid_i, grid_j, 2] = width_norm
                     target_tensor[grid_i, grid_j, 3] = height_norm
 
+                    # Assign Confidence = 1 to the first box slot
+                    target_tensor[grid_i, grid_j, 4] = 1.0
+                    
                     # Assign Class probabilities (one-hot)
-                    class_vector_start_index = self.B * 5
+                    class_vector_start_index = self.B * 5                    
                     target_tensor[grid_i, grid_j, class_vector_start_index + class_id] = 1.0
+
+                    # Assign Distance Feature
+                    distance = self._distance_loader(scene, camera, image_name, box_json['ObjectId'])
+                    target_tensor[grid_i, grid_j, distance_index] = distance
+
         return target_tensor 
+    
+    def _distance_loader(self, scene: str, camera: str, image_name: str, object_id: int):
+        box_3d_file = image_name.replace(camera, 'frame').replace('.jpg', '.json') 
+        box_data_path_3d = f'{self.data_path}/{scene}/dynamic/box/3d_body/{box_3d_file}'
+        fault_tensor = torch.zeros(1, dtype=torch.float32)
+        if not os.path.exists(box_data_path_3d):
+            print(f"Warning: 3D box data file not found: {box_data_path_3d}.")
+            return fault_tensor
+        
+        with open(box_data_path_3d, 'r') as box_file_handle:
+            try:
+                data = json.load(box_file_handle)
+            except json.JSONDecodeError:
+                print(f"Warning: Invalid JSON in {box_data_path_3d}. Skipping boxes.")
+                return fault_tensor
+            
+            boxes_data = data.get('CapturedObjects', [])
+            for box_json in boxes_data:
+                if box_json.get('ObjectId') == object_id:
+                    x = box_json["BoundingBox3D Origin X"]
+                    y = box_json["BoundingBox3D Origin Y"]
+                    z = box_json["BoundingBox3D Origin Z"]
+                    return torch.sqrt(torch.tensor(x**2 + y**2 + z**2, dtype=torch.float32))
+                
+        return fault_tensor
     
     def _index_images(self):
         """
@@ -207,7 +281,7 @@ class DatasetGenerator(Dataset):
             front_radar_full_path = f'{self.data_path}/{scene}/sensor/radar/F_LRR_C/{front_radar_file}'
             back_radar_data_full_path = f'{self.data_path}/{scene}/sensor/radar/B_LRR_C/{back_radar_file}'
             
-            if os.path.exists(front_radar_full_path) or os.path.exists(back_radar_data_full_path):
+            if os.path.exists(front_radar_full_path) and os.path.exists(back_radar_data_full_path):
                 correct_image_paths.append(paths)
 
         if len(correct_image_paths) > self.max_images and self.max_images > 0:
