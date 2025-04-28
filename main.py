@@ -26,51 +26,31 @@ class NeuralNetwork(nn.Module):
         self.output_features_per_box = (num_boxes * 5) + num_classes
         self.input_dims = (3, constants.IMAGE_HEIGHT, constants.IMAGE_WIDTH)
 
-        # Load pre-trained ResNet50
-        base_model = models.resnet50(weights=ResNet50_Weights.IMAGENET1K_V1)
-
-        # Remove the last fully connected layer
-        base_model = nn.Sequential(*list(base_model.children())[:-2])
-
-        # Freeze the base model
-        for param in base_model.parameters():
-            param.requires_grad = False
-
-        NUM_FILTERS = 512
-        cnn = nn.Sequential(
+        NUM_FILTERS = 256
+        self.cnn = nn.Sequential(
             # Based on the VGG16 architecture
             # https://arxiv.org/pdf/1409.1556.pdf
-            nn.Conv2d(2048, NUM_FILTERS, kernel_size=3, padding=1),
+            nn.Conv2d(3, 16, kernel_size=3, stride=1, padding=1),
+            nn.LeakyReLU(0.1, inplace=True),
+            nn.MaxPool2d(kernel_size=2, stride=2),
+            nn.Conv2d(16, 32, kernel_size=3, stride=1, padding=1),
+            nn.LeakyReLU(0.1, inplace=True),
+            nn.MaxPool2d(kernel_size=2, stride=2),
+            nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1),
+            nn.LeakyReLU(0.1, inplace=True),
+            nn.MaxPool2d(kernel_size=2, stride=2),
+            nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1),
+            nn.LeakyReLU(0.1, inplace=True),
+            nn.MaxPool2d(kernel_size=2, stride=2),
+            nn.Conv2d(128, 256, kernel_size=3, padding=1),
             nn.BatchNorm2d(NUM_FILTERS),
             nn.LeakyReLU(0.1),
-            
-            nn.Conv2d(NUM_FILTERS, NUM_FILTERS, kernel_size=3, padding=1),
-            nn.BatchNorm2d(NUM_FILTERS),
-            nn.LeakyReLU(0.1),
-            
-            nn.Conv2d(NUM_FILTERS, NUM_FILTERS, kernel_size=3, padding=1),
-            nn.BatchNorm2d(NUM_FILTERS),
-            nn.LeakyReLU(0.1),
-            # nn.Conv2d(3, 16, kernel_size=3, stride=1, padding=1),
-            # nn.LeakyReLU(0.1, inplace=True),
-            # nn.MaxPool2d(kernel_size=2, stride=2),
-            # nn.Conv2d(16, 32, kernel_size=3, stride=1, padding=1),
-            # nn.LeakyReLU(0.1, inplace=True),
-            # nn.MaxPool2d(kernel_size=2, stride=2),
-            # nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1),
-            # nn.LeakyReLU(0.1, inplace=True),
-            # nn.MaxPool2d(kernel_size=2, stride=2),
-            # nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1),
-            # nn.LeakyReLU(0.1, inplace=True),
-            # nn.MaxPool2d(kernel_size=2, stride=2),
-            # nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=1),
-            # nn.LeakyReLU(0.1, inplace=True),
         )
 
         flatten = nn.Flatten()
 
-        dense_layers = nn.Sequential(
-            nn.Linear(NUM_FILTERS * (constants.IMAGE_HEIGHT // 32) * (constants.IMAGE_WIDTH // 32), NUM_FILTERS),
+        self.dense_layers = nn.Sequential(
+            nn.Linear(NUM_FILTERS * (constants.IMAGE_HEIGHT // 16) * (constants.IMAGE_WIDTH // 16), NUM_FILTERS),
             nn.BatchNorm1d(NUM_FILTERS),
             nn.LeakyReLU(0.1),
             
@@ -78,41 +58,16 @@ class NeuralNetwork(nn.Module):
             nn.Sigmoid()
         )
 
-        # Combine all layers into a single sequential model
         self.model = nn.Sequential(
-            base_model,
-            cnn,
+            self.cnn,
             flatten,
-            dense_layers,
+            self.dense_layers,
             nn.Unflatten(1, (constants.GRID_SIZE, constants.GRID_SIZE, self.output_features_per_cell))
         )
-        # with torch.no_grad():
-        #     dummy_input = torch.zeros(1, *self.input_dims) 
-        #     cnn_out_shape = self.cnn(dummy_input).shape
-        #     self.flattened_size = cnn_out_shape[1] * cnn_out_shape[2] * cnn_out_shape[3]
 
-        # Fully connected layers
-        self.detection_head  = nn.Sequential(
-            nn.Conv2d(256, 512, kernel_size=3, stride=1, padding=1), # Extra conv layers often help
-            nn.LeakyReLU(0.1, inplace=True),
-            nn.Dropout(0.5),
-            # Final convolution maps features to the desired output shape per cell
-            nn.Conv2d(512, self.output_features_per_cell, kernel_size=1, stride=1, padding=0)
-        )
-
-        # self.fc = nn.Sequential(
-        #     nn.Flatten(), 
-        #     nn.Linear(self.flattened_size, 1024),
-        #     nn.ReLU(),
-        #     nn.Dropout(0.1), 
-        #     nn.Linear(1024, self.num_boxes * self.output_features_per_box)
-        # )
     def forward(self, x):
-        # features = self.cnn(x)
-        # predictions = self.detection_head(features)
-        # # predictions = predictions.view(-1, self.num_boxes, self.output_features_per_box)
-        # predictions = predictions.permute(0, 2, 3, 1)
         return self.model(x)
+    
 def difference(x, y):
     return torch.sum((y - x)**2)
 
@@ -321,16 +276,8 @@ if __name__ == "__main__":
     torch.manual_seed(5) #3
     
     start_time = time.time()
-    
-
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    with Profile() as pr:
-        pr.enable()
-        dataset = DatasetLoader('highway', num_boxes_per_cell=constants.MAX_NUM_BBOXES, grid_size=constants.GRID_SIZE)
-        pr.disable()
-        stats = Stats(pr)
-        stats.sort_stats(SortKey.TIME)
-        stats.print_stats(10)  # Print the top 10 functions by time
+    dataset = DatasetLoader('highway',max_images=1_000, num_boxes_per_cell=constants.MAX_NUM_BBOXES, grid_size=constants.GRID_SIZE)
     train_dataset, val_dataset, test_dataset = torch.utils.data.random_split(dataset, [0.8, 0.1, 0.1])
 
     num_workers = 4
