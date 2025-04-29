@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from constants import *
 
 class RadarFeatureNetwork(nn.Module):
@@ -8,17 +9,24 @@ class RadarFeatureNetwork(nn.Module):
         
         self.camera_count = constants.CAMERA_COUNT
         self.input_dim = constants.RADAR_INPUT_SIZE - 1 +  self.camera_count # Exclude the valid bit
-        hidden_dim = 128
+        mlp_hidden_dim = 128
         self.output_dim = output_dim
-
+        point_feature_dim = 128
+        attention_hidden_dim = 128
         self.radar_mlp = nn.Sequential(
-            nn.Linear(self.input_dim, hidden_dim),
-            nn.LayerNorm(hidden_dim), # LayerNorm often works well here
+            nn.Linear(self.input_dim, mlp_hidden_dim),
+            nn.LayerNorm(mlp_hidden_dim), # LayerNorm often works well here
             nn.ReLU(inplace=True),
-            nn.Linear(hidden_dim, output_dim),
-            nn.LayerNorm(output_dim),
-            nn.ReLU(inplace=True)
+            nn.Linear(mlp_hidden_dim, point_feature_dim),
+            # nn.LayerNorm(output_dim),
+            # nn.ReLU(inplace=True)
         )
+
+        self.attention_projection  = nn.Linear(point_feature_dim, attention_hidden_dim)
+        self.attention_scorer = nn.Linear(attention_hidden_dim, 1)
+
+        self.final_projection = nn.Linear(point_feature_dim, output_dim) if point_feature_dim != output_dim else nn.Identity()
+        self.final_activation = nn.ReLU(inplace=True) # Or another activation
 
     def forward(self, radar_data, camera_data):
         radar_input = radar_data[:, :, :constants.RADAR_INPUT_SIZE - 1]  # Exclude the valid bit
@@ -30,15 +38,20 @@ class RadarFeatureNetwork(nn.Module):
 
         radar_camera_input = torch.cat((radar_input, camera_data_expanded), dim=2)
         point_features = self.radar_mlp(radar_camera_input)
+        
+        # attention mechanism
+        projected_features = torch.tanh(self.attention_projection(point_features))
+        attention_logits = self.attention_scorer(projected_features).squeeze(-1)
+        attention_logits.masked_fill_(mask == False, -float('inf'))
+        attention_weights = F.softmax(attention_logits, dim=1)
+        masked_attention_weights = attention_weights * mask.float()
 
-        masked_features = point_features * mask.unsqueeze(-1).float()  # Apply the mask to the features
+        aggregated_features = torch.sum(masked_attention_weights.unsqueeze(-1) * point_features, dim=1)
 
-        # Masked Average Pooling
-        summed_features = torch.sum(masked_features, dim=1)  # Sum over the radar points
-        num_valid_points = torch.sum(mask, dim=1) + 1e-6 # Shape: [B]
-        num_valid_points_for_div = num_valid_points.unsqueeze(1) # Shape: [B, 1]
-        averaged_features = summed_features / num_valid_points_for_div  # Average over the valid points
-        return averaged_features
+        final_output = self.final_projection(aggregated_features)
+        final_output = self.final_activation(final_output) # Apply final activation
+
+        return final_output
     
 class FusionNetwork(nn.Module):
     def __init__(self, car_recognition_model, num_classes=1, num_boxes=1, hidden_dim=512):
@@ -53,7 +66,14 @@ class FusionNetwork(nn.Module):
 
         for param in self.car_recognition_model.parameters():
                 param.requires_grad = False
-        self.car_recognition_model.eval() 
+        
+        # unfreeze_indices = [12, 13]
+        # print(f"Unfreezing CNN layers at indices: {unfreeze_indices}")
+        # for i, layer in enumerate(self.car_recognition_model):
+        #     if i in unfreeze_indices:
+        #         print(f"  Unfreezing layer {i}: {layer}")
+        #         for param in layer.parameters():
+        #             param.requires_grad = True
 
         self.radar_feature_network = RadarFeatureNetwork()
         self.radar_output_dim = self.radar_feature_network.output_dim
