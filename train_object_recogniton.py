@@ -35,12 +35,12 @@ if __name__ == "__main__":
     start_time = time.time()
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     dataset = DatasetLoader('highway', num_boxes_per_cell=constants.MAX_NUM_BBOXES, grid_size=constants.GRID_SIZE)
-    train_dataset, val_dataset, test_dataset = torch.utils.data.random_split(dataset, [0.8, 0.1, 0.1])
+    train_dataset, val_dataset = torch.utils.data.random_split(dataset, [0.8, 0.2])
 
     num_workers = 8
     train_loader = torch.utils.data.DataLoader(train_dataset, num_workers=num_workers, batch_size=32, shuffle=True, pin_memory=True)
     val_loader = torch.utils.data.DataLoader(val_dataset, num_workers=num_workers, batch_size=32, shuffle=False, pin_memory=True)
-    test_loader = torch.utils.data.DataLoader(test_dataset, num_workers=num_workers, batch_size=32, shuffle=False, pin_memory=True)
+    # test_loader = torch.utils.data.DataLoader(test_dataset, num_workers=num_workers, batch_size=32, shuffle=False, pin_memory=True)
 
     car_model = CarRecorgnitionNetwork(num_classes=constants.NUM_OF_CLASSES, num_boxes=constants.MAX_NUM_BBOXES).to(device)
     # car_model_path = 'models/model_036.pth'
@@ -58,9 +58,9 @@ if __name__ == "__main__":
     peak_lr = 1e-2         # The LR achieved *after* warm-up (and start of phase 1)
     warmup_start_lr = 1e-3 # The LR at the very beginning of training
     warmup_epochs = 5
-    phase1_epochs = 10
-    phase2_epochs = 10
-    phase3_epochs = 20
+    phase1_epochs = 5
+    phase2_epochs = 5
+    phase3_epochs = 10
 
     # optimizer = optim.Adam(model.parameters(), lr=1e-3)
     optimizer = optim.SGD(model.parameters(), lr=peak_lr, momentum=0.9, weight_decay=0.0005)
@@ -85,7 +85,7 @@ if __name__ == "__main__":
     scheduler = SequentialLR(optimizer,
                             schedulers=[warmup_scheduler, decay_scheduler],
                             milestones=sequential_milestones)
-
+    training_start_time = time.time()
     # --- Example Training Loop ---
     total_epochs = warmup_epochs + phase1_epochs + phase2_epochs + phase3_epochs
     for epoch in range(total_epochs):
@@ -134,4 +134,4 @@ if __name__ == "__main__":
         end_time = time.time()
         elapsed_time = end_time - start_time
         print(f'Epoch [{epoch+1}/{total_epochs}], Validation Loss: {val_loss}, Learning Rate: {scheduler.optimizer.param_groups[0]["lr"]}, Elapsed Time: {elapsed_time:.2f} seconds')
-        save_model(model, start_time)
+        save_model(model, training_start_time)

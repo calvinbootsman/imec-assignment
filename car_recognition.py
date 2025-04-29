@@ -147,7 +147,7 @@ def yolo_loss(target, predictions):
         + object_loss                         # Confidence loss (object present)
         + lambda_noobj * no_object_loss  # Confidence loss (no object present)
         + class_loss                          # Classification loss
-        + distance_loss
+        + distance_loss *0.5
     )
 
     # Average loss over the batch size

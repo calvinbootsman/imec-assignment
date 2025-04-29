@@ -142,17 +142,18 @@ def load_latest_model(models_folder: str):
     
     # Load the latest model
     latest_model_path = os.path.join(models_folder, model_files[0])
+    latest_model_path = 'obj_models/obj_model_1745947072.330789.pth'
     car_model = CarRecorgnitionNetwork(num_classes=constants.NUM_OF_CLASSES, num_boxes=constants.MAX_NUM_BBOXES).to(device)
     # car_model_path = 'models/model_036.pth'
     car_model.load_state_dict(torch.load(latest_model_path))
     
-    # print(f"Loading model from: {latest_model_path}")
+    print(f"Loading model from: {latest_model_path}")
     # model = FusionNetwork(car_recognition_model=car_model, num_classes=constants.NUM_OF_CLASSES, num_boxes=constants.MAX_NUM_BBOXES).to(device)
     # model.load_state_dict(torch.load(latest_model_path))
     return car_model
 
 if __name__ == "__main__":
-    random.seed(40)
+    random.seed(5)
     torch.manual_seed(5) #3
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -171,7 +172,7 @@ if __name__ == "__main__":
         image_tensor = image_tensor.unsqueeze(0).to(device)
         
         outputs = latest_model(image_tensor)
-        output_image = draw_bounding_boxes_yolo(image, outputs[0], constants.GRID_SIZE, constants.MAX_NUM_BBOXES, constants.NUM_OF_CLASSES, threshold=0.6)
+        output_image = draw_bounding_boxes_yolo(image, outputs[0], constants.GRID_SIZE, constants.MAX_NUM_BBOXES, constants.NUM_OF_CLASSES, threshold=0.55)
         # images.append(output_image)
         cv2.imshow("YOLO Output", output_image)
         cv2.waitKey(0)

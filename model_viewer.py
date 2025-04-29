@@ -143,7 +143,7 @@ def load_latest_model(models_folder: str):
     # Load the latest model
     latest_model_path = os.path.join(models_folder, model_files[0])
     car_model = CarRecorgnitionNetwork(num_classes=constants.NUM_OF_CLASSES, num_boxes=constants.MAX_NUM_BBOXES).to(device)
-    car_model_path = 'models/model_036.pth'
+    car_model_path = 'obj_models/obj_model_1745947072.330789.pth'
     car_model.load_state_dict(torch.load(car_model_path))
     
     print(f"Loading model from: {latest_model_path}")
@@ -173,7 +173,7 @@ if __name__ == "__main__":
         camera = camera.unsqueeze(0).to(device)
         
         outputs = latest_model(image_tensor, radar, camera)
-        output_image = draw_bounding_boxes_yolo(image, outputs[0], constants.GRID_SIZE, constants.MAX_NUM_BBOXES, constants.NUM_OF_CLASSES, threshold=0.55)
+        output_image = draw_bounding_boxes_yolo(image, outputs[0], constants.GRID_SIZE, constants.MAX_NUM_BBOXES, constants.NUM_OF_CLASSES, threshold=0.8)
         # images.append(output_image)
         cv2.imshow("YOLO Output", output_image)
         cv2.waitKey(0)
