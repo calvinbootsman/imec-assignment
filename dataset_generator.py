@@ -37,7 +37,7 @@ class DatasetGenerator(Dataset):
         }
 
     def generate(self):
-        output_dir = 'processed_data_with_radar'
+        output_dir = 'preprocessed_data'
         os.makedirs(output_dir, exist_ok=True)
         with open(os.path.join(output_dir, 'image_paths.txt'), 'w') as f:
             for path in self.image_paths:
@@ -113,12 +113,13 @@ class DatasetGenerator(Dataset):
                             np.clip(target['azimuth'] / constants.MAX_AZIMUTH, -1.0, 1.0), # Normalize and clip azimuth
                             np.clip(target['rcs'] / constants.MAX_RCS, 0.0, 1.0), # Normalize and clip RCS
                             np.clip(target['noise'] / constants.MAX_NOISE, 0.0, 1.0), # Normalize and clip noise
+                            np.clip(target['range'] / constants.MAX_RADAR_DISTANCE, 0.0, 1.0), # Normalize and clip range
                             float(i), # 0 for front, 1 for back
                             1.0 # for valid targets
                         ])
 
         if len(radar_data) < constants.MAX_RADAR_POINTS:
-            radar_data += [[0, 0, 0, 0, 0]] * (constants.MAX_RADAR_POINTS - len(radar_data))
+            radar_data += [[0] * constants.RADAR_INPUT_SIZE] * (constants.MAX_RADAR_POINTS - len(radar_data))
             radar_tensor = torch.tensor(radar_data, dtype=torch.float32)
         else:
             radar_tensor = torch.tensor(radar_data, dtype=torch.float32)

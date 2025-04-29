@@ -20,12 +20,12 @@ class DatasetLoader:
         self.S = grid_size
         self.C = constants.NUM_OF_CLASSES
 
-        with open('processed_data/image_paths.txt', 'r') as file:
+        with open('preprocessed_data/image_paths.txt', 'r') as file:
             self.image_paths = [line.strip() for line in file.readlines()]
         self.image_paths = self.image_paths[:max_images] if max_images > 0 else self.image_paths
         
     def __getitem__(self, index):
-        path = f'processed_data_with_radar/sample_{index:06d}.pth'
+        path = f'preprocessed_data/sample_{index:06d}.pth'
         if not os.path.exists(path):
              raise IndexError("Index out of range")
     

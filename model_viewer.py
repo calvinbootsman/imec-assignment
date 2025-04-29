@@ -5,7 +5,7 @@ import torch.nn as nn
 from constants import *
 import os
 from dataset_loader import * 
-from main import NeuralNetwork
+from car_recognition import *
 import random
 
 def draw_bounding_boxes_yolo(image: np.ndarray,
@@ -136,12 +136,13 @@ def load_latest_model(models_folder: str):
     
     # Load the latest model
     latest_model_path = os.path.join(models_folder, model_files[0])
-    model = NeuralNetwork(grid_size=constants.GRID_SIZE, num_classes=constants.NUM_OF_CLASSES, num_boxes=constants.MAX_NUM_BBOXES).to(device)
+    print(f"Loading model from: {latest_model_path}")
+    model = CarRecorgnitionNetwork(num_classes=constants.NUM_OF_CLASSES, num_boxes=constants.MAX_NUM_BBOXES).to(device)
     model.load_state_dict(torch.load(latest_model_path))
     return model
 
 if __name__ == "__main__":
-    random.seed(4)
+    random.seed(40)
     torch.manual_seed(5) #3
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
