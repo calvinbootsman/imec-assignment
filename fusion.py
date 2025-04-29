@@ -43,8 +43,8 @@ class RadarFeatureNetwork(nn.Module):
 class FusionNetwork(nn.Module):
     def __init__(self, car_recognition_model, num_classes=1, num_boxes=1, hidden_dim=512):
         super().__init__()
-
-        self.output_features_per_cell = (num_classes* 5) + num_classes# 4 coordinates + 1 confidence score
+        
+        self.output_features_per_cell = (num_classes* 5) + num_classes + 1 # 4 coordinates + 1 confidence score + distance estimate
         self.output_features_per_box = (num_boxes * 5) + num_classes
         self.input_dims = (3, constants.IMAGE_HEIGHT, constants.IMAGE_WIDTH)
 

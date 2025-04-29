@@ -69,7 +69,8 @@ def yolo_loss(target, predictions):
         torch.Tensor: Computed loss value.
     """
     pred_boxes = []
-    pred_confs = []
+    pred_confidence = []
+
     B = constants.MAX_NUM_BBOXES
     S = constants.GRID_SIZE
     C = constants.NUM_OF_CLASSES
@@ -79,13 +80,15 @@ def yolo_loss(target, predictions):
     for b in range(B):
         offset = b * 5
         pred_boxes.append(predictions[..., offset : offset+4])
-        pred_confs.append(predictions[..., offset+4 : offset+5]) # Keep dim
+        pred_confidence.append(predictions[..., offset+4 : offset+5])
     pred_classes = predictions[..., B*5 :]
+    pred_distance = predictions[...,B*5 + 1:]
 
     target_box = target[..., 0:4] # [x, y, w, h]
     target_conf = target[..., 4:5] # Confidence (objectness) - should be 1 if object present, 0 otherwise
     target_classes = target[..., B*5 :] # One-hot encoded classes
-    
+    target_distance = target[...,B*5 + 1 :]
+
     exists_box = target_conf  # target_conf used as a mask
 
     # Loss Box coordinates (x, y, w, h)
@@ -105,7 +108,7 @@ def yolo_loss(target, predictions):
     )
     
     # Loss Object
-    pred_conf_obj = exists_box * pred_confs[0] # (BATCH, S, S, 1)
+    pred_conf_obj = exists_box * pred_confidence[0] # (BATCH, S, S, 1)
     target_conf_obj = exists_box * target_conf # Target is already 1 where object exists
     object_loss = mse(
             torch.flatten(pred_conf_obj), # Flatten (BATCH*S*S)
@@ -116,7 +119,7 @@ def yolo_loss(target, predictions):
     no_object_loss = 0.0
     no_exists_box = (1.0 - exists_box) # Mask for cells without objects
     for b in range(B):
-            pred_conf_noobj = no_exists_box * pred_confs[b]
+            pred_conf_noobj = no_exists_box * pred_confidence[b]
             target_conf_noobj = no_exists_box * torch.zeros_like(target_conf) # Target is 0
             no_object_loss += mse(
                 torch.flatten(pred_conf_noobj), # Flatten (BATCH*S*S)
@@ -131,11 +134,20 @@ def yolo_loss(target, predictions):
         torch.flatten(target_classes_obj, end_dim=-2)
     )
 
+    # Loss Distance
+    pred_distance_obj = exists_box * pred_distance # (BATCH, S, S, 1)
+    target_distance_obj = exists_box * target_distance # (BATCH, S, S, 1)
+    distance_loss = mse(
+        torch.flatten(pred_distance_obj), # Flatten (BATCH*S*S, 1)
+        torch.flatten(target_distance_obj) # Flatten (BATCH*S*S, 1)
+    )
+
     total_loss = (
         lambda_coord * box_loss          # Localization loss
         + object_loss                         # Confidence loss (object present)
         + lambda_noobj * no_object_loss  # Confidence loss (no object present)
         + class_loss                          # Classification loss
+        + distance_loss
     )
 
     # Average loss over the batch size

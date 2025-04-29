@@ -142,7 +142,7 @@ if __name__ == "__main__":
     dataset = DatasetLoader('highway', num_boxes_per_cell=constants.MAX_NUM_BBOXES, grid_size=constants.GRID_SIZE)
     train_dataset, val_dataset, test_dataset = torch.utils.data.random_split(dataset, [0.8, 0.1, 0.1])
 
-    num_workers = 0
+    num_workers = 8
     train_loader = torch.utils.data.DataLoader(train_dataset, num_workers=num_workers, batch_size=32, shuffle=True, pin_memory=True)
     val_loader = torch.utils.data.DataLoader(val_dataset, num_workers=num_workers, batch_size=32, shuffle=False, pin_memory=True)
     test_loader = torch.utils.data.DataLoader(test_dataset, num_workers=num_workers, batch_size=32, shuffle=False, pin_memory=True)
@@ -208,8 +208,8 @@ if __name__ == "__main__":
             optimizer.zero_grad()
             with torch.amp.autocast(device_type='cuda'):
                 outputs = model(image, batch_radar, batch_camera)
-                image_target = batch_targets[..., :-1]  
-                loss = criterion(outputs, image_target)
+                # image_target = batch_targets[..., :-1]  
+                loss = criterion(outputs, batch_targets)
             loss.backward()
             optimizer.step()
             running_loss += loss.item()
@@ -234,8 +234,9 @@ if __name__ == "__main__":
                 batch_camera = batch_camera.to(device, non_blocking=True)
                 with torch.amp.autocast(device_type='cuda'):
                     outputs = model(image, batch_radar, batch_camera)
-                    image_target = batch_targets[..., :-1]  
-                    val_loss += loss.item()
+                    # image_target = batch_targets[..., :-1]  
+                    loss = criterion(outputs, batch_targets)
+                val_loss += loss.item()
 
         val_loss /= len(val_loader)
         end_time = time.time()
