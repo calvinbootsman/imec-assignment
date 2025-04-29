@@ -7,6 +7,7 @@ import os
 from dataset_loader import * 
 from car_recognition import *
 import random
+from fusion import *
 
 def draw_bounding_boxes_yolo(image: np.ndarray,
                              tensor_data: torch.Tensor,
@@ -90,6 +91,7 @@ def draw_bounding_boxes_yolo(image: np.ndarray,
                     class_index = class_index.item()
                     class_score = class_score.item()
 
+
                     # Get the class name
                     label = "Unknown"
                     for keys, value in class_names.items():
@@ -97,7 +99,11 @@ def draw_bounding_boxes_yolo(image: np.ndarray,
                             label = keys
                             break
                     
-
+                    # Get the distance estimate (if applicable)
+                    distance_estimate = tensor_data[i, j, box_offset + 5] if (box_offset + 5) < tensor_data.shape[2] else None
+                    if distance_estimate is not None:
+                        distance_estimate = distance_estimate.item()
+                        label += f" (Dist: {distance_estimate:.2f})"
                     # --- 5. Draw Rectangle and Label ---
                     # Create label text with class, class score, and box confidence
                     label_text = f"{label}: {class_score:.2f} (Conf: {confidence:.2f})"
@@ -136,8 +142,12 @@ def load_latest_model(models_folder: str):
     
     # Load the latest model
     latest_model_path = os.path.join(models_folder, model_files[0])
+    car_model = CarRecorgnitionNetwork(num_classes=constants.NUM_OF_CLASSES, num_boxes=constants.MAX_NUM_BBOXES).to(device)
+    car_model_path = 'models/model_036.pth'
+    car_model.load_state_dict(torch.load(car_model_path))
+    
     print(f"Loading model from: {latest_model_path}")
-    model = CarRecorgnitionNetwork(num_classes=constants.NUM_OF_CLASSES, num_boxes=constants.MAX_NUM_BBOXES).to(device)
+    model = FusionNetwork(car_recognition_model=car_model, num_classes=constants.NUM_OF_CLASSES, num_boxes=constants.MAX_NUM_BBOXES).to(device)
     model.load_state_dict(torch.load(latest_model_path))
     return model
 
@@ -156,9 +166,13 @@ if __name__ == "__main__":
         random_index = random.randint(0, len(dataset) - 1)
         random_sample = dataset[random_index]
         image_tensor, targets_tensor, radar, camera = random_sample
+
         image = dataset.get_original_image(random_index)
         image_tensor = image_tensor.unsqueeze(0).to(device)
-        outputs = latest_model(image_tensor)
+        radar = radar.unsqueeze(0).to(device)
+        camera = camera.unsqueeze(0).to(device)
+        
+        outputs = latest_model(image_tensor, radar, camera)
         output_image = draw_bounding_boxes_yolo(image, outputs[0], constants.GRID_SIZE, constants.MAX_NUM_BBOXES, constants.NUM_OF_CLASSES, threshold=0.55)
         # images.append(output_image)
         cv2.imshow("YOLO Output", output_image)
