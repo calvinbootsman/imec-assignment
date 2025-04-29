@@ -8,6 +8,7 @@ from dataset_loader import *
 from car_recognition import *
 import random
 from fusion import *
+import glob
 
 def draw_bounding_boxes_yolo(image: np.ndarray,
                              tensor_data: torch.Tensor,
@@ -153,27 +154,80 @@ def load_latest_model(models_folder: str):
     return car_model
 
 if __name__ == "__main__":
-    random.seed(5)
-    torch.manual_seed(5) #3
+    # random.seed(5)
+    # torch.manual_seed(5) #3
 
+    # device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    # models_folder = "obj_models"
+    # latest_model = load_latest_model(models_folder)
+    # latest_model.eval()
+
+    # dataset = DatasetLoader('highway',max_images=10_000, num_boxes_per_cell=constants.MAX_NUM_BBOXES, grid_size=constants.GRID_SIZE)
+    # images = []
+    # for i in range(5):
+    #     random_index = random.randint(0, len(dataset) - 1)
+    #     random_sample = dataset[random_index]
+    #     image_tensor, targets_tensor, radar, camera = random_sample
+
+    #     image = dataset.get_original_image(random_index)
+    #     image_tensor = image_tensor.unsqueeze(0).to(device)
+        
+    #     outputs = latest_model(image_tensor)
+    #     output_image = draw_bounding_boxes_yolo(image, outputs[0], constants.GRID_SIZE, constants.MAX_NUM_BBOXES, constants.NUM_OF_CLASSES, threshold=0.55)
+    #     # images.append(output_image)
+    #     cv2.imshow("YOLO Output", output_image)
+    #     cv2.waitKey(0)
+    #     # cv2.destroyAllWindows()
+
+    # Select a random folder from the 'train/highway' directory
+    train_highway_path = 'train/highway'
+    subfolders = [f.path for f in os.scandir(train_highway_path) if f.is_dir()]
+
+    if not subfolders:
+        raise FileNotFoundError("No subfolders found in the 'train/highway' directory.")
+
+    random_folder = random.choice(subfolders)
+    
+    subfolders = [f.path for f in os.scandir(os.path.join(random_folder, "sensor", "camera")) if f.is_dir()]
+
+    if not subfolders:
+        raise FileNotFoundError("No subfolders found in the 'train/highway' directory.")
+
+    random_folder = random.choice(subfolders)
+    print(f"Selected folder: {random_folder}")
+
+    # Get all .jpg files in the selected folder
+    image_files = glob.glob(os.path.join(random_folder, "*.jpg"))
+    if not image_files:
+        raise FileNotFoundError("No .jpg files found in the selected folder.")
+    
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     models_folder = "obj_models"
     latest_model = load_latest_model(models_folder)
     latest_model.eval()
+    for image_path in image_files:
+        # Read the image
+        image = cv2.imread(image_path)
+        if image is None:
+            print(f"Could not read image: {image_path}")
+            continue
 
-    dataset = DatasetLoader('highway',max_images=10_000, num_boxes_per_cell=constants.MAX_NUM_BBOXES, grid_size=constants.GRID_SIZE)
-    images = []
-    for i in range(5):
-        random_index = random.randint(0, len(dataset) - 1)
-        random_sample = dataset[random_index]
-        image_tensor, targets_tensor, radar, camera = random_sample
-
-        image = dataset.get_original_image(random_index)
+        # Resize the image to the input size of the model
+        resized_image = cv2.resize(image, (constants.IMAGE_WIDTH, constants.IMAGE_HEIGHT))
+        resized_image = cv2.cvtColor(resized_image, cv2.COLOR_BGR2RGB)
+        # Convert to tensor and add batch dimension
+        image_tensor = torch.from_numpy(resized_image).permute(2, 0, 1).float() / 255.0
         image_tensor = image_tensor.unsqueeze(0).to(device)
-        
+
+        # Pass through the model
         outputs = latest_model(image_tensor)
+
+        # Draw bounding boxes on the original image
         output_image = draw_bounding_boxes_yolo(image, outputs[0], constants.GRID_SIZE, constants.MAX_NUM_BBOXES, constants.NUM_OF_CLASSES, threshold=0.55)
-        # images.append(output_image)
+
+        # Display the output image with bounding boxes
         cv2.imshow("YOLO Output", output_image)
-        cv2.waitKey(0)
-        # cv2.destroyAllWindows()
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+
+    
